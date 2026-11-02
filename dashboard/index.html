@@ -303,7 +303,7 @@ const raceName = id => (RACES.find(r => r.id === id) || {}).name || id || 'No ra
 const hoursSince = t => (Date.now() - new Date(t)) / 36e5;
 const verNum = v => +((String(v || '').match(/\d+/) || [0])[0]);
 const ready = r => r.setup_done && r.map_saved && r.location_ok;
-let latestApp = '', dupBibs = new Set();
+let latestApp = '', dupBibs = new Set(), pushIds = null;
 function derive() {
   latestApp = runners.reduce((m, r) => (verNum(r.app_version) > verNum(m) ? r.app_version : m), '');
   const c = {};
@@ -318,6 +318,7 @@ function problems(r) {
   if (!r.bib) p.push('No bib number');
   if (r.app_version && verNum(r.app_version) < verNum(latestApp)) p.push('Old app version');
   if (hoursSince(r.last_seen) > 72) p.push('Not seen for 3+ days');
+  if (pushIds && !pushIds.has(r.device_id)) p.push('Notifications off');
   return p;
 }
 const ISSUES = [
@@ -328,6 +329,7 @@ const ISSUES = [
   ['info', 'No bib number', 'Did not enter a bib number in the app', r => !r.bib],
   ['info', 'Old app version', 'Need to open the app on wifi and tap Update now', r => r.app_version && verNum(r.app_version) < verNum(latestApp)],
   ['info', 'Not seen for 3+ days', 'Have not opened the app recently', r => hoursSince(r.last_seen) > 72],
+  ['info', 'Notifications off', 'Will only see messages when they open the app. Ask them to tap Menu > Turn on notifications', r => pushIds && !pushIds.has(r.device_id)],
 ];
 
 // ---- Overview ----
@@ -409,7 +411,7 @@ addEventListener('resize', () => { if (!$('app').hidden) drawChart(); });
 const state = { q: '', race: '', chip: 'all', issue: null, sort: 'bib', dir: 1 };
 const CHIPS = [['all', 'All'], ['ready', 'Race-ready'], ['notready', 'Not ready'], ['problems', 'Has a problem']];
 $('chips').innerHTML = CHIPS.map(([k, l]) => `<button class="chip" data-chip="${k}" aria-pressed="${k === 'all'}">${l}</button>`).join('');
-const COLS = [['bib', 'Bib'], ['name', 'Name'], ['race', 'Race'], ['setup', 'Setup'], ['map', 'Map saved'], ['loc', 'Location'], ['app', 'App'], ['phone', 'Phone'], ['first', 'Signed in'], ['seen', 'Last seen'], ['status', 'Status']];
+const COLS = [['bib', 'Bib'], ['name', 'Name'], ['race', 'Race'], ['setup', 'Setup'], ['map', 'Map saved'], ['loc', 'Location'], ['push', 'Notifications'], ['app', 'App'], ['phone', 'Phone'], ['first', 'Signed in'], ['seen', 'Last seen'], ['status', 'Status']];
 $('thead').innerHTML = COLS.map(([k, l]) => `<th data-sort="${k}" scope="col">${l}</th>`).join('');
 const yn = (v, on = true) => (!on ? '<span class="q">–</span>' : v ? '<span class="y">✓ Yes</span>' : '<span class="n">✕ No</span>');
 function seenText(t) {
@@ -434,7 +436,7 @@ function filtered() {
     return true;
   });
   const keys = { bib: r => (isNaN(+r.bib) ? r.bib || '' : +r.bib), name: r => r.name.toLowerCase(), race: r => raceName(r.race_id), setup: r => r.setup_done, map: r => r.map_saved,
-    loc: r => r.location_ok, app: r => verNum(r.app_version), phone: r => r.phone || '', first: r => r.first_seen, seen: r => -new Date(r.last_seen), status: r => statusOf(r)[1] };
+    loc: r => r.location_ok, push: r => !!(pushIds && pushIds.has(r.device_id)), app: r => verNum(r.app_version), phone: r => r.phone || '', first: r => r.first_seen, seen: r => -new Date(r.last_seen), status: r => statusOf(r)[1] };
   const key = keys[state.sort];
   return list.sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * state.dir);
 }
@@ -445,10 +447,10 @@ function renderTable() {
     const [cls, label] = statusOf(r), p = problems(r);
     const old = r.app_version && verNum(r.app_version) < verNum(latestApp);
     return `<tr><td class="bib num">${esc(r.bib) || '<span class="q">–</span>'}</td><td>${esc(r.name)}${p.length ? `<div class="flag">${esc(p.join(' · '))}</div>` : ''}</td>
-      <td>${esc(raceName(r.race_id))}</td><td>${yn(r.setup_done)}</td><td>${yn(r.map_saved, r.setup_done)}</td><td>${yn(r.location_ok, r.setup_done)}</td>
+      <td>${esc(raceName(r.race_id))}</td><td>${yn(r.setup_done)}</td><td>${yn(r.map_saved, r.setup_done)}</td><td>${yn(r.location_ok, r.setup_done)}</td><td>${yn(pushIds && pushIds.has(r.device_id), !!pushIds)}</td>
       <td>${r.app_version ? (old ? `<span class="n">${esc(r.app_version)}</span>` : esc(r.app_version)) : '<span class="q">–</span>'}</td><td>${esc(r.phone) || '<span class="q">–</span>'}</td>
       <td class="num">${dateText(r.first_seen)}</td><td class="num">${seenText(r.last_seen)}</td><td><span class="pill ${cls}">${label}</span></td></tr>`;
-  }).join('') || `<tr><td colspan="11" class="q">${runners.length ? 'No runners match these filters.' : 'No runners have signed in yet.'}</td></tr>`;
+  }).join('') || `<tr><td colspan="12" class="q">${runners.length ? 'No runners match these filters.' : 'No runners have signed in yet.'}</td></tr>`;
   document.querySelectorAll('[data-chip]').forEach(b => b.setAttribute('aria-pressed', b.dataset.chip === state.chip && state.issue == null));
   document.querySelectorAll('th').forEach(th => (th.textContent = COLS.find(c => c[0] === th.dataset.sort)[1] + (th.dataset.sort === state.sort ? (state.dir > 0 ? ' ▲' : ' ▼') : '')));
 }
@@ -457,8 +459,8 @@ $('raceSel').addEventListener('change', e => { state.race = e.target.value; rend
 $('chips').addEventListener('click', e => { const b = e.target.closest('[data-chip]'); if (b) { state.chip = b.dataset.chip; state.issue = null; renderTable(); } });
 $('thead').addEventListener('click', e => { const th = e.target.closest('th'); if (!th) return; state.dir = state.sort === th.dataset.sort ? -state.dir : 1; state.sort = th.dataset.sort; renderTable(); });
 $('copyCsv').addEventListener('click', () => {
-  const rows = [['Bib', 'Name', 'Race', 'Setup finished', 'Map saved', 'Location', 'App', 'Phone', 'Signed in', 'Last seen', 'Status', 'Problems']]
-    .concat(filtered().map(r => [r.bib || '', r.name, raceName(r.race_id), r.setup_done, r.map_saved, r.location_ok, r.app_version || '', r.phone || '',
+  const rows = [['Bib', 'Name', 'Race', 'Setup finished', 'Map saved', 'Location', 'Notifications', 'App', 'Phone', 'Signed in', 'Last seen', 'Status', 'Problems']]
+    .concat(filtered().map(r => [r.bib || '', r.name, raceName(r.race_id), r.setup_done, r.map_saved, r.location_ok, !!(pushIds && pushIds.has(r.device_id)), r.app_version || '', r.phone || '',
       new Date(r.first_seen).toLocaleString('en-GB'), new Date(r.last_seen).toLocaleString('en-GB'), statusOf(r)[1], problems(r).join('; ')]));
   copy(rows.map(r => r.map(c => String(c).replace(/[\t\n]/g, ' ')).join('\t')).join('\n'), `${rows.length - 1} rows. Paste into Excel`);
 });
@@ -504,12 +506,15 @@ $('composer').addEventListener('submit', async e => {
   const who = race ? raceName(race) + ' runners' : 'ALL runners';
   if (!confirm(`Send this to ${who}?\n\n${body}`)) return;
   $('postBtn').disabled = true;
-  const { error } = await db.from('messages').insert({ body, race_id: race });
-  $('postBtn').disabled = false;
-  if (error) { toast('Not sent: ' + error.message); return; }
+  const { data: posted, error } = await db.from('messages').insert({ body, race_id: race }).select('id').single();
+  if (error) { $('postBtn').disabled = false; toast('Not sent: ' + error.message); return; }
   $('body').value = ''; $('bodyCount').textContent = '0 / 600';
-  toast(`Sent to ${who}. Phones pick it up when they have signal.`);
   loadMsgs();
+  // Wake up the phones that have notifications on.
+  const { data: pushed, error: pushErr } = await db.functions.invoke('send-push', { body: { message_id: posted.id } });
+  $('postBtn').disabled = false;
+  toast(pushErr ? `Sent to ${who}. Phones see it when they open the app (notifications are not set up: ${pushErr.message}).`
+    : `Sent to ${who}: ${pushed.sent} phone${pushed.sent === 1 ? '' : 's'} notified now. The rest see it when they open the app.`);
 });
 $('msgList').addEventListener('click', async e => {
   const b = e.target.closest('[data-del]');
@@ -528,6 +533,9 @@ function renderSync() {
 async function loadAll() {
   const { data, error } = await db.from('registrations').select('*');
   if (error) { toast('Could not load runners: ' + error.message); return; }
+  // Which phones have notifications on (null until that part of the database is set up).
+  const p = await db.from('push_subscriptions').select('device_id');
+  pushIds = p.error ? null : new Set(p.data.map(x => x.device_id));
   runners = data; lastLoad = new Date(); renderAll(); renderSync();
 }
 function goLive() {

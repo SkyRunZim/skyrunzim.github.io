@@ -75,9 +75,44 @@ try {
   }
 
   // ------------------------------------------------------------------
+  // Notifications: a runner already set up is offered them once; turning
+  // them on saves this phone's push address with its race.
+  {
+    const { ctx, page } = await newPage({ permissions: ['notifications'] });
+    // Headless browsers have no push service: stand in a fake one.
+    await ctx.addInitScript(() => {
+      const fake = { endpoint: 'https://push.example.com/send/abc123', toJSON() { return { endpoint: this.endpoint, keys: { p256dh: 'pk', auth: 'au' } }; } };
+      let subscribed = null;
+      PushManager.prototype.getSubscription = async () => subscribed;
+      PushManager.prototype.subscribe = async () => (subscribed = fake);
+    });
+    await ctx.addInitScript(() => { Object.defineProperty(Notification, 'permission', { get: () => window.__perm || 'default' }); Notification.requestPermission = async () => (window.__perm = 'granted'); });
+    await page.goto(URL);
+    await page.waitForFunction(() => course && course.info);
+    check('Runners already set up are offered notifications once', await page.locator('#pushBanner').isVisible());
+    await page.click('#pushYes');
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem('profile')).pushSig, null, { timeout: 5000 }).catch(() => {});
+    const sp = page.calls.filter(c => c.fn === 'save_push').pop();
+    check('Turning on notifications saves the phone\'s push address with its race', !!sp && sp.body.p_endpoint === 'https://push.example.com/send/abc123' &&
+      sp.body.p_race === 'the-challenge' && sp.body.p_p256dh === 'pk', JSON.stringify(sp && sp.body));
+    check('Notification offer goes away once answered', !(await page.locator('#pushBanner').isVisible()));
+    await page.evaluate(() => openSheet()); await page.waitForTimeout(300);
+    check('Menu says notifications are on', (await text(page, '#pushText')).includes('Notifications are on') && !(await page.locator('#pushBtn').isVisible()),
+      `${await text(page, '#pushText')} | button visible: ${await page.locator('#pushBtn').isVisible()}`);
+    const cfg = await page.evaluate(async () => (await (await caches.open('rc-config')).match('config')).json());
+    check('The offline worker is given what it needs to collect messages', cfg.url.includes('supabase.co') && cfg.race === 'the-challenge');
+    const n = page.calls.length;
+    await page.evaluate(() => push.refresh());
+    check('The push address is not re-sent when nothing changed', page.calls.filter((c, i) => i >= n && c.fn === 'save_push').length === 0);
+    await ctx.close();
+  }
+
+  // ------------------------------------------------------------------
   // First-time setup: name, race, map, location
   {
     const { ctx, page, errors } = await newPage({ fresh: true, permissions: ['geolocation'], geolocation: { ...EDDY, accuracy: 8 } });
+    // Like a new phone: notifications not asked yet (test browsers block them by default).
+    await ctx.addInitScript(() => Object.defineProperty(Notification, 'permission', { get: () => 'default' }));
     await page.goto(URL);
     check('Fresh install opens setup', await page.locator('#setup').isVisible() && (await text(page, '#setupStep')).includes('Step 1'));
     await page.click('#setupBody [data-go]');
@@ -103,7 +138,12 @@ try {
     await page.click('#suGpsBtn');
     await page.waitForFunction(() => document.getElementById('suGps').textContent.includes('Location found'));
     await page.click('#suNext');
+    const alertsStep = await text(page, '#setupBody');
+    check('Setup offers notifications for race control messages', alertsStep.includes('Messages from race control') &&
+      await page.locator('#suPushBtn').isVisible() && (await text(page, '#suNext')) === 'Not now', alertsStep);
+    await page.click('#suNext');
     const ready = await text(page, '#setupBody');
+    check('Ready screen says notifications are off', ready.includes('Notifications off'));
     check('Ready screen summarises name, bib, race, map and location',
       ready.includes('Tendai Moyo, bib 142') && ready.includes('Race: The Challenge') && ready.includes('Map NOT saved') && ready.includes('Location working'));
     await shot(page, '9-setup-ready');

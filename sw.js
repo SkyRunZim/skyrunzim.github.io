@@ -1,8 +1,9 @@
 // Offline worker. Bump SHELL on every release (match APP_VERSION in app.js);
 // that is what makes phones pick up new files. The tile cache is kept across
 // releases so runners don't have to download the map again.
-const SHELL = 'shell-v15';
+const SHELL = 'shell-v16';
 const TILES = 'tiles-v2';
+const RC = 'rc-config';   // race control settings the app leaves here for notifications
 const CORE = [
   './', 'index.html', 'app.js', 'manifest.json', 'icon-192.png', 'icon-512.png',
   'icon-maskable-192.png', 'icon-maskable-512.png', 'apple-touch-icon.png',
@@ -33,7 +34,7 @@ self.addEventListener('install', e => {
 
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys()
-    .then(keys => Promise.all(keys.filter(k => k !== SHELL && k !== TILES).map(k => caches.delete(k))))
+    .then(keys => Promise.all(keys.filter(k => k !== SHELL && k !== TILES && k !== RC).map(k => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
 
@@ -72,5 +73,43 @@ self.addEventListener('fetch', e => {
     } catch {
       return new Response('Offline. Open the app once with internet first.', { status: 503 });
     }
+  })());
+});
+
+// Race control notifications. The push itself carries no text: collect the
+// newest message for this runner's race (settings left by the app in RC)
+// and show it. Phones must always show something for a push, so if the
+// message can't be collected, a general "open the app" notice is shown.
+async function rcGet(key) {
+  try { const r = await (await caches.open(RC)).match(key); return r ? await r.json() : null; } catch { return null; }
+}
+self.addEventListener('push', e => {
+  e.waitUntil((async () => {
+    let title = 'Message from race control', body = 'Open SkyRunZim to read it.';
+    try {
+      const cfg = await rcGet('config');
+      const res = await fetch(`${cfg.url}/rest/v1/rpc/get_messages`, {
+        method: 'POST', headers: { apikey: cfg.key, 'Content-Type': 'application/json' }, body: JSON.stringify({ p_race: cfg.race || '' }),
+      });
+      const list = await res.json();                       // newest first
+      const seen = (await rcGet('seen')) || 0;             // newest message already notified
+      const fresh = list.filter(m => m.id > seen);
+      if (fresh.length) {
+        body = fresh[0].body;
+        if (fresh.length > 1) title = `${fresh.length} messages from race control`;
+        await (await caches.open(RC)).put('seen', new Response(JSON.stringify(fresh[0].id)));
+      }
+    } catch (err) { console.warn('[sw] message not collected', err && err.message); }
+    await self.registration.showNotification(title, { body, icon: 'icon-192.png', tag: 'race-control', renotify: true });
+  })());
+});
+// Tapping the notification opens the app (or brings it forward) on the message.
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  e.waitUntil((async () => {
+    const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const app = wins.find(c => !/\/dashboard/.test(new URL(c.url).pathname));
+    if (app) { await app.focus(); app.postMessage('check-messages'); }
+    else await self.clients.openWindow('./');
   })());
 });

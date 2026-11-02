@@ -162,3 +162,45 @@ revoke all on function public.get_messages(text) from public;
 revoke all on function public.mark_read(uuid, bigint[]) from public;
 grant execute on function public.get_messages(text) to anon, authenticated;
 grant execute on function public.mark_read(uuid, bigint[]) to anon, authenticated;
+
+-- ================================================================ phone notifications
+-- A phone that allows notifications saves its push address here. The
+-- send-push Edge Function (supabase/functions/send-push) reads it with the
+-- service key when an organiser sends a message. Organisers can only see
+-- WHICH runners have notifications on, not the push addresses.
+create table if not exists public.push_subscriptions (
+  device_id  uuid primary key,
+  endpoint   text not null,
+  p256dh     text,
+  auth       text,
+  race_id    text,
+  updated_at timestamptz not null default now()
+);
+alter table public.push_subscriptions enable row level security;
+revoke all on public.push_subscriptions from anon, authenticated;
+grant select (device_id, race_id, updated_at) on public.push_subscriptions to authenticated;
+drop policy if exists "organisers see who has notifications" on public.push_subscriptions;
+create policy "organisers see who has notifications" on public.push_subscriptions
+  for select to authenticated using (public.is_organiser());
+
+create or replace function public.save_push(p_device uuid, p_endpoint text, p_p256dh text, p_auth text, p_race text)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+begin
+  if p_device is null or p_endpoint !~ '^https://' then raise exception 'bad push address'; end if;
+  insert into public.push_subscriptions (device_id, endpoint, p256dh, auth, race_id)
+  values (p_device, left(p_endpoint, 1000), left(p_p256dh, 200), left(p_auth, 100), left(p_race, 40))
+  on conflict (device_id) do update set endpoint = excluded.endpoint, p256dh = excluded.p256dh,
+    auth = excluded.auth, race_id = excluded.race_id, updated_at = now();
+end;
+$$;
+create or replace function public.delete_push(p_device uuid)
+returns void
+language sql security definer set search_path = public
+as $$ delete from public.push_subscriptions where device_id = p_device; $$;
+
+revoke all on function public.save_push(uuid, text, text, text, text) from public;
+revoke all on function public.delete_push(uuid) from public;
+grant execute on function public.save_push(uuid, text, text, text, text) to anon, authenticated;
+grant execute on function public.delete_push(uuid) to anon, authenticated;

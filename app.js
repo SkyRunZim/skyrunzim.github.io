@@ -1,6 +1,6 @@
 // SkyRunZim: offline race map with live GPS, run recording and course.
 // Keep APP_VERSION in step with SHELL in sw.js.
-const APP_VERSION = 'v15 (2 Nov 2026)';
+const APP_VERSION = 'v16 (2 Nov 2026)';
 const TILE_CACHE = 'tiles-v2';
 // The maps the app can show. Each race says which map it uses ("map" in the
 // race list). Bump a map's tag when its pieces change, so phones download again.
@@ -848,6 +848,76 @@ const inbox = {
 };
 $('msgPopOk').onclick = () => inbox.ok();
 
+// Phone notifications: race control messages arrive like a text, even with
+// the app closed (when the phone has signal). The phone's push address is
+// saved with save_push; supabase/functions/send-push wakes the phone, and
+// sw.js collects and shows the message.
+const VAPID_PUBLIC = 'BMPu63z_Rj9WjL7Kz1hYBj5tmTPu_4zZG-kyDNDGErBToRyKISIYxyzzF6UVjRHZ4gYIDOEclVwJGEyODuNFtm8';
+const push = {
+  supported: () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window,
+  // granted / denied / default, or why it can't work on this phone.
+  state() {
+    if (this.supported()) return Notification.permission;
+    return isIOS && !isStandalone ? 'ios-install' : 'unsupported';
+  },
+  on() { return this.state() === 'granted'; },
+  text() {
+    return {
+      granted: profile.pushSig ? '🔔 Notifications are on: race messages reach you even when the app is closed (when you have signal).'
+        : '🔔 Notifications allowed. Finishing setup next time you have signal.',
+      default: 'Turn on notifications so race messages reach you like a text, even when the app is closed.',
+      denied: 'Notifications are blocked for SkyRunZim. To get them, allow notifications for this app in your phone’s Settings. Messages still pop up when you open the app.',
+      'ios-install': 'On iPhone, notifications only work when SkyRunZim is opened from its Home Screen icon. Messages still pop up when you open the app.',
+      unsupported: 'This phone or browser can’t show notifications from the app. Messages still pop up when you open the app.',
+    }[this.state()];
+  },
+  // Must be called from a tap (iPhones only allow the question after a tap).
+  async enable() {
+    if (!this.supported()) return false;
+    pref('pushAsked', '1');
+    await this.saveConfig();
+    if (await Notification.requestPermission() === 'granted') {
+      try { await this.subscribe(true); toast('Notifications are on.'); }
+      catch (err) { console.warn('[push] not subscribed yet', err.message || err); }
+    }
+    this.render();
+    return this.on();
+  },
+  async subscribe(force) {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = (await reg.pushManager.getSubscription()) ||
+      await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(atob(VAPID_PUBLIC.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)) });
+    const j = sub.toJSON(), sig = `${j.endpoint}|${profile.raceId || ''}`;
+    if (!force && sig === profile.pushSig) return;
+    await sync.rpc('save_push', { p_device: sync.deviceId(), p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth, p_race: profile.raceId || '' });
+    profile.pushSig = sig; saveProfile();
+  },
+  // Settings the offline worker needs to collect a message when a push arrives.
+  async saveConfig() {
+    try {
+      const c = await caches.open('rc-config');
+      await c.put('config', new Response(JSON.stringify({ url: RACE_CONTROL.url, key: RACE_CONTROL.key, race: profile.raceId || '' })));
+      const newest = Math.max(0, ...inbox.list.map(m => m.id));   // messages already seen in the app aren't notified again
+      const seen = await c.match('seen').then(r => (r ? r.json() : 0));
+      if (newest > seen) await c.put('seen', new Response(JSON.stringify(newest)));
+    } catch {}
+  },
+  async refresh() {
+    await this.saveConfig();
+    if (this.on()) try { await this.subscribe(false); } catch (err) { console.warn('[push] not saved yet, will try again', err.message || err); }
+    this.render();
+  },
+  render() {
+    $('pushText').textContent = this.text();
+    $('pushBtn').style.display = this.state() === 'default' ? '' : 'none';   // .btn styling overrides "hidden"
+    $('pushBanner').style.display = profile.setupDone && this.state() === 'default' && !pref('pushAsked') ? 'block' : 'none';
+  },
+};
+$('pushBtn').onclick = () => push.enable();
+$('pushYes').onclick = () => push.enable();
+$('pushNo').onclick = () => { pref('pushAsked', '1'); push.render(); };
+if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', e => { if (e.data === 'check-messages') inbox.check(true); });
+
 async function loadRaceList() {
   if (races.length) return races;
   const res = await fetch('data/races/index.json');
@@ -1051,6 +1121,7 @@ const setup = {
     sync.soon();
     this.close();
     inbox.check(true);   // the new race may have its own messages; shows any waiting
+    push.refresh();      // notifications follow the new race
     try {
       await showRace(profile.raceId);
       setFollow(false);
@@ -1059,7 +1130,7 @@ const setup = {
   },
 
   render() {
-    const b = $('setupBody'), steps = ['welcome', 'details', 'race', 'map', 'location', 'ready'];
+    const b = $('setupBody'), steps = ['welcome', 'details', 'race', 'map', 'location', 'alerts', 'ready'];
     $('setupStep').textContent = this.changing ? '' : `Step ${steps.indexOf(this.step) + 1} of ${steps.length}`;
     const html = this[this.step]();
     b.innerHTML = html;
@@ -1168,7 +1239,7 @@ const setup = {
   },
   wire_location() {
     $('suGpsBtn').onclick = () => startGps();
-    $('suNext').onclick = () => this.go('ready');
+    $('suNext').onclick = () => this.go('alerts');
     this.tick();
   },
   // Called every second while setup is open, to show live GPS status.
@@ -1184,6 +1255,21 @@ const setup = {
     } else el.textContent = 'Tap "Allow location" and accept when your phone asks.';
   },
 
+  alerts() {
+    const ask = push.state() === 'default';
+    return `<h2>Messages from race control</h2>
+      <p>The organisers send updates here: start times, weather, route changes. With notifications on, they reach you like a text, even when the app is closed.</p>
+      <div class="small" id="suPush">${escapeHtml(push.text())}</div>
+      ${ask ? '<button class="btn" id="suPushBtn">🔔 Turn on notifications</button>' : ''}
+      <button class="btn${ask ? ' secondary' : ''}" id="suNext">${ask ? 'Not now' : 'Next'}</button>
+      <button class="btn secondary" id="suBack">Back</button>`;
+  },
+  wire_alerts() {
+    if ($('suPushBtn')) $('suPushBtn').onclick = async () => { await push.enable(); this.render(); };
+    $('suNext').onclick = () => this.go('ready');
+    $('suBack').onclick = () => this.go('location');
+  },
+
   ready() {
     const r = races.find(x => x.id === this.picked);
     const row = (ok, text) => `<div class="check ${ok ? 'ok' : 'warn'}">${ok ? '✓' : '⚠'} ${text}</div>`;
@@ -1191,13 +1277,14 @@ const setup = {
       ${row(!!profile.name, `Name: ${escapeHtml(profile.name || 'not given')}${profile.bib ? ', bib ' + escapeHtml(profile.bib) : ''}`)}
       ${row(!!r, r ? `Race: ${escapeHtml(r.name)}, ${r.distanceKm} km` : 'No race chosen')}
       ${row(mapSaved(this.mapId()), mapSaved(this.mapId()) ? 'Map saved for offline use' : 'Map NOT saved: download it from the menu before you go')}
-      ${row(!!gps.fix, gps.fix ? 'Location working' : 'Location not found yet: it will keep looking')}      <p class="small">Keep the app open on screen while you run. It is a navigation aid: follow the course markings and marshals.</p>
+      ${row(!!gps.fix, gps.fix ? 'Location working' : 'Location not found yet: it will keep looking')}
+      ${row(push.on(), push.on() ? 'Notifications on' : 'Notifications off: you can turn them on in the menu')}      <p class="small">Keep the app open on screen while you run. It is a navigation aid: follow the course markings and marshals.</p>
       <button class="btn" id="suDone">Open my map</button>
       <button class="btn secondary" id="suBack">Back</button>`;
   },
   wire_ready() {
     $('suDone').onclick = () => this.finish();
-    $('suBack').onclick = () => this.go('location');
+    $('suBack').onclick = () => this.go('alerts');
   },
 };
 
@@ -1321,7 +1408,9 @@ inbox.render();
 setTimeout(() => inbox.check(true), 4500);
 addEventListener('online', () => { sync.soon(); inbox.check(true); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { sync.soon(); inbox.check(true); } });
-setInterval(() => { sync.send(); inbox.check(); }, 60000);
+setInterval(() => { sync.send(); inbox.check(); push.refresh(); }, 60000);
+push.render();
+setTimeout(() => push.refresh(), 5000);
 // The app is running: take down the start-up screen.
 $('boot').remove();
 

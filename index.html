@@ -240,6 +240,10 @@
   <div id="resumeText">An unfinished recording was found.</div>
   <div class="acts"><button class="pill" id="resumeBtn">Resume recording</button><button class="pill" id="finishBtn">Finish and save</button></div>
 </div>
+<div class="banner" id="pushBanner">
+  🔔 Get race messages on your phone even when the app is closed.
+  <div class="acts"><button class="pill" id="pushYes">Turn on notifications</button><button class="pill" id="pushNo">Not now</button></div>
+</div>
 <div class="toast" id="toast"></div>
 <div class="debug" id="debug"></div>
 
@@ -310,6 +314,8 @@
   <button class="btn sos" id="medBtn">Emergency and medical guide</button>
 
   <h3>Messages from race control</h3>
+  <div class="small" id="pushText"></div>
+  <button class="btn secondary" id="pushBtn" style="display:none">🔔 Turn on notifications</button>
   <div id="msgList"><div class="small">No messages yet. New ones arrive whenever your phone has signal.</div></div>
 
   <h3>Offline map</h3>
