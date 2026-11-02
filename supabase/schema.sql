@@ -106,3 +106,59 @@ begin
     alter publication supabase_realtime add table public.registrations;
   end if;
 end $$;
+
+-- ================================================================ messages to runners
+-- Organisers post from the dashboard; phones collect them whenever they have
+-- signal (get_messages) and say when the runner has read them (mark_read).
+create table if not exists public.messages (
+  id         bigint generated always as identity primary key,
+  created_at timestamptz not null default now(),
+  race_id    text,                             -- null = all runners
+  body       text not null check (char_length(body) between 1 and 600),
+  author     text default (auth.jwt() ->> 'email')
+);
+create table if not exists public.message_reads (
+  message_id bigint not null references public.messages(id) on delete cascade,
+  device_id  uuid not null,
+  read_at    timestamptz not null default now(),
+  primary key (message_id, device_id)
+);
+alter table public.messages      enable row level security;
+alter table public.message_reads enable row level security;
+
+drop policy if exists "organisers read messages" on public.messages;
+create policy "organisers read messages" on public.messages
+  for select to authenticated using (public.is_organiser());
+drop policy if exists "organisers post messages" on public.messages;
+create policy "organisers post messages" on public.messages
+  for insert to authenticated with check (public.is_organiser());
+drop policy if exists "organisers delete messages" on public.messages;
+create policy "organisers delete messages" on public.messages
+  for delete to authenticated using (public.is_organiser());
+drop policy if exists "organisers read message reads" on public.message_reads;
+create policy "organisers read message reads" on public.message_reads
+  for select to authenticated using (public.is_organiser());
+
+-- The messages for one runner's race (and those for everyone), newest first.
+create or replace function public.get_messages(p_race text)
+returns table (id bigint, created_at timestamptz, race_id text, body text)
+language sql stable security definer set search_path = public
+as $$
+  select m.id, m.created_at, m.race_id, m.body from public.messages m
+  where m.race_id is null or m.race_id = p_race
+  order by m.created_at desc limit 30;
+$$;
+
+create or replace function public.mark_read(p_device uuid, p_ids bigint[])
+returns void
+language sql security definer set search_path = public
+as $$
+  insert into public.message_reads (message_id, device_id)
+  select m.id, p_device from public.messages m where m.id = any(p_ids)
+  on conflict do nothing;
+$$;
+
+revoke all on function public.get_messages(text) from public;
+revoke all on function public.mark_read(uuid, bigint[]) from public;
+grant execute on function public.get_messages(text) to anon, authenticated;
+grant execute on function public.mark_read(uuid, bigint[]) to anon, authenticated;

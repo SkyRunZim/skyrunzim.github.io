@@ -175,6 +175,7 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
 .btn:disabled { opacity: .5; cursor: default; }
 .dot.off { background: #f5b960; box-shadow: 0 0 0 3px rgba(245,185,96,.25); }
 .who { font-size: 13px; opacity: .85; }
+.msg .meta .btn { float: right; padding: 2px 8px; font-size: 12px; margin-left: 8px; }
 .warnbar { background: var(--warn-bg); color: var(--warn); padding: 10px 14px; border-radius: 10px; font-weight: 600; }
 .tabs[hidden], .sync[hidden], [hidden] { display: none !important; }
 </style>
@@ -194,6 +195,7 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
     <nav class="tabs" role="tablist" hidden>
       <button class="tab" role="tab" aria-selected="true" data-view="overview">Overview</button>
       <button class="tab" role="tab" aria-selected="false" data-view="runners">Runners</button>
+      <button class="tab" role="tab" aria-selected="false" data-view="messages">Messages to runners</button>
     </nav>
   </div>
 </header>
@@ -246,6 +248,21 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
     </div>
     <div class="tablebox"><table><thead><tr id="thead"></tr></thead><tbody id="tbody"></tbody></table></div>
     <div class="foot"><span>Tap a column heading to sort.</span><span>A runner’s row updates when their phone has signal. Their position is never sent.</span></div>
+  </section>
+  <section class="view panel" id="view-messages" hidden>
+    <div class="head"><div><h2>Messages to runners</h2><div class="sub">Pops up in the app next time each phone has signal, and stays readable offline in the app’s menu</div></div></div>
+    <div class="msgs">
+      <form class="composer" id="composer">
+        <label for="to"><b>Send to</b></label>
+        <select id="to"></select>
+        <label for="body"><b>Message</b></label>
+        <textarea id="body" maxlength="600" placeholder="e.g. Race briefing moved to 17:00 at the Far and Wide base. Bring your mandatory kit for inspection."></textarea>
+        <div class="notice" id="bodyCount">0 / 600</div>
+        <div><button class="btn primary" type="submit" id="postBtn">Send message</button></div>
+        <div class="notice">Runners cannot reply in the app. For anything urgent, also use WhatsApp or a phone call.</div>
+      </form>
+      <div style="display:grid;gap:10px;align-content:start" id="msgList"></div>
+    </div>
   </section>
 </main>
 <div id="tip"></div>
@@ -454,7 +471,52 @@ function show(v) {
 }
 document.querySelector('.tabs').addEventListener('click', e => { const t = e.target.closest('.tab'); if (t) show(t.dataset.view); });
 
-function renderAll() { derive(); renderOverview(); renderTable(); }
+function renderAll() { derive(); renderOverview(); renderTable(); renderMsgs(); }
+
+// ---- Messages to runners ----
+let messages = [], reads = [];
+function fillTo() {
+  $('to').innerHTML = '<option value="">All runners</option>' + RACES.map(r => `<option value="${esc(r.id)}">${esc(r.name)} runners only</option>`).join('');
+}
+async function loadMsgs() {
+  const [m, r] = await Promise.all([
+    db.from('messages').select('*').order('created_at', { ascending: false }),
+    db.from('message_reads').select('message_id'),
+  ]);
+  if (m.error) { $('msgList').innerHTML = `<p class="notice">Messages are not set up yet (${esc(m.error.message)}). Run the latest supabase/schema.sql.</p>`; return; }
+  messages = m.data; reads = r.data || [];
+  renderMsgs();
+}
+function renderMsgs() {
+  if (!messages.length) { $('msgList').innerHTML = '<b>Sent</b><p class="notice">No messages sent yet.</p>'; return; }
+  const readBy = id => reads.filter(x => x.message_id === id).length;
+  const audience = m => (m.race_id ? runners.filter(r => r.race_id === m.race_id).length : runners.length);
+  $('msgList').innerHTML = '<b>Sent</b>' + messages.map(m => `<div class="msg"><div class="meta">${esc(m.race_id ? raceName(m.race_id) + ' runners' : 'All runners')} ·
+    ${esc(new Date(m.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))} ·
+    read by ${readBy(m.id)} of ${audience(m)}${m.author ? ' · from ' + esc(m.author) : ''}
+    <button class="btn linkish" data-del="${m.id}">Delete</button></div><div style="white-space:pre-wrap">${esc(m.body)}</div></div>`).join('');
+}
+$('body').addEventListener('input', () => { $('bodyCount').textContent = `${$('body').value.length} / 600`; });
+$('composer').addEventListener('submit', async e => {
+  e.preventDefault();
+  const body = $('body').value.trim(), race = $('to').value || null;
+  if (!body) { toast('Write a message first'); return; }
+  const who = race ? raceName(race) + ' runners' : 'ALL runners';
+  if (!confirm(`Send this to ${who}?\n\n${body}`)) return;
+  $('postBtn').disabled = true;
+  const { error } = await db.from('messages').insert({ body, race_id: race });
+  $('postBtn').disabled = false;
+  if (error) { toast('Not sent: ' + error.message); return; }
+  $('body').value = ''; $('bodyCount').textContent = '0 / 600';
+  toast(`Sent to ${who}. Phones pick it up when they have signal.`);
+  loadMsgs();
+});
+$('msgList').addEventListener('click', async e => {
+  const b = e.target.closest('[data-del]');
+  if (!b || !confirm('Delete this message? It disappears from runners’ apps the next time they have signal.')) return;
+  const { error } = await db.from('messages').delete().eq('id', +b.dataset.del);
+  if (error) toast('Not deleted: ' + error.message); else loadMsgs();
+});
 
 // ---- Live data ----
 let channel = null, lastLoad = null, live = false;
@@ -491,7 +553,9 @@ async function signedIn(session) {
   const { data: isOrg } = await db.rpc('is_organiser');
   $('notOrganiser').hidden = !!isOrg;
   if (!RACES.length) await loadRaces();
+  fillTo();
   await loadAll();
+  loadMsgs();
   goLive();
 }
 $('loginForm').addEventListener('submit', async e => {
@@ -510,6 +574,6 @@ db.auth.onAuthStateChange((_event, session) => {
   setTimeout(() => signedIn(session), 0);
 });
 // Every minute: a fresh copy in case a live update was missed, and new "last seen" times.
-setInterval(() => { if (current) loadAll(); }, 60000);
+setInterval(() => { if (current) { loadAll(); loadMsgs(); } }, 60000);
 </script>
 </body></html>

@@ -200,9 +200,33 @@
   .zoom-lo .lbl.minor, .zoom-lo .lbl.km, .zoom-lo .lbl.arrow { display: none; }
   .leaflet-control-attribution { font-size: 9px; }
   .leaflet-top.leaflet-left { top: calc(env(safe-area-inset-top) + 50px); }
+  /* Start-up screen: shown by the page itself until the app is running. */
+  .boot { position: fixed; inset: 0; z-index: 4000; background: #f7f7f7; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 14px; padding: 24px; text-align: center; font: 16px/1.45 system-ui, sans-serif; color: #172036; }
+  .boot img { width: 96px; height: 96px; border-radius: 20px; }
+  .boot .wheel { width: 34px; height: 34px; border-radius: 50%; border: 4px solid #d5deea; border-top-color: #184898; animation: spin .8s linear infinite; }
+  .boot .slow { max-width: 340px; background: #fff3e0; border-radius: 12px; padding: 12px 14px; font-size: 15px; }
+  /* Messages from race control */
+  .msgpop { position: fixed; inset: 0; z-index: 2900; background: rgba(0,0,0,.45); display: none; align-items: center; justify-content: center; padding: 16px; }
+  .msgpop.open { display: flex; }
+  .msgpop .card { background: #fff; border-radius: 16px; padding: 18px; width: 100%; max-width: 440px; max-height: 80vh; overflow-y: auto; }
+  .msgpop h2 { margin: 0 0 8px; font-size: 19px; }
+  .rcmsg { border-left: 4px solid #184898; background: #eef3fb; border-radius: 0 10px 10px 0; padding: 10px 12px; margin: 8px 0; font-size: 15px; white-space: pre-wrap; }
+  .rcmsg small { display: block; color: #555; font-size: 12px; margin-bottom: 2px; white-space: normal; }
 </style>
 </head>
 <body>
+<div class="boot" id="boot" role="status">
+  <img src="icon-192.png" alt="">
+  <div class="wheel" aria-hidden="true"></div>
+  <b>Loading SkyRunZim…</b>
+  <div class="slow" id="bootSlow" hidden>
+    <b>Still loading?</b> A weak signal can hold the app up.<br>
+    Turn <b>off wifi and mobile data</b> (or turn on airplane mode), then close the app and open it again.
+    Once set up, the app and your saved map work with no signal at all.
+  </div>
+</div>
+<script>setTimeout(function () { var s = document.getElementById('bootSlow'); if (s) s.hidden = false; }, 5000);</script>
 <div id="map"></div>
 
 <div class="topbar">
@@ -285,6 +309,9 @@
   <div class="small" id="version"></div>
   <button class="btn sos" id="medBtn">Emergency and medical guide</button>
 
+  <h3>Messages from race control</h3>
+  <div id="msgList"><div class="small">No messages yet. New ones arrive whenever your phone has signal.</div></div>
+
   <h3>Offline map</h3>
   <div class="small" id="dlText">Download the map once on wifi, then it works with no signal.</div>
   <div class="progress" id="dlProgress"><div></div></div>
@@ -319,6 +346,14 @@
   <div class="med-body" id="medBody">
     <div class="med-intro">The official <b>SkyRun 2026 Athlete Medical Guide</b> from the race director, saved on this phone so it works with no signal. Tap a phone number to call; calls need signal.</div>
     <div id="medContent">Loading…</div>
+  </div>
+</div>
+
+<div class="msgpop" id="msgPop" role="dialog" aria-label="Message from race control">
+  <div class="card">
+    <h2>📣 Message from race control</h2>
+    <div id="msgPopList"></div>
+    <button class="btn" id="msgPopOk">Got it</button>
   </div>
 </div>
 

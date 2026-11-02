@@ -1,6 +1,6 @@
 // SkyRunZim: offline race map with live GPS, run recording and course.
 // Keep APP_VERSION in step with SHELL in sw.js.
-const APP_VERSION = 'v14 (2 Nov 2026)';
+const APP_VERSION = 'v15 (2 Nov 2026)';
 const TILE_CACHE = 'tiles-v2';
 // The maps the app can show. Each race says which map it uses ("map" in the
 // race list). Bump a map's tag when its pieces change, so phones download again.
@@ -798,8 +798,55 @@ const sync = {
       method: 'POST', headers: { apikey: RACE_CONTROL.key, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`${fn} ${res.status}`);
+    return res;
   },
 };
+
+// Messages from race control: collected whenever there is signal, kept on the
+// phone so they can be read offline, and shown once as a pop-up when new.
+// "Read" is reported back (later, if there is no signal) for the dashboard.
+const stored = (k, empty) => { try { return JSON.parse(pref(k)) || empty; } catch { return empty; } };
+const inbox = {
+  list: stored('messages', []), readIds: stored('msgRead', []), unsent: stored('msgReadUnsent', []), fetchedAt: 0,
+  save() { pref('messages', JSON.stringify(this.list)); pref('msgRead', JSON.stringify(this.readIds)); pref('msgReadUnsent', JSON.stringify(this.unsent)); },
+  // Every few minutes at most, unless asked now (start-up, reopening, signal back).
+  async check(now = false) {
+    if (!now && Date.now() - this.fetchedAt < 3 * 60e3) return;
+    this.fetchedAt = Date.now();
+    try {
+      const res = await sync.rpc('get_messages', { p_race: profile.raceId || '' });
+      this.list = await res.json(); this.save(); this.render(); this.popup();
+    } catch (err) { console.warn('[race control] messages not checked', err.message || err); }
+    this.sendReads();
+  },
+  async sendReads() {
+    if (!this.unsent.length) return;
+    const ids = this.unsent.slice();
+    try { await sync.rpc('mark_read', { p_device: sync.deviceId(), p_ids: ids }); this.unsent = this.unsent.filter(i => !ids.includes(i)); this.save(); }
+    catch (err) { console.warn('[race control] read receipts not sent yet', err.message || err); }
+  },
+  unread() { return this.list.filter(m => !this.readIds.includes(m.id)); },
+  html: m => `<div class="rcmsg"><small>${escapeHtml(new Date(m.created_at).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}` +
+    ` · ${m.race_id ? 'Your race' : 'All runners'}</small>${escapeHtml(m.body)}</div>`,
+  render() {
+    $('msgList').innerHTML = this.list.length ? this.list.map(this.html).join('')
+      : '<div class="small">No messages yet. New ones arrive whenever your phone has signal.</div>';
+  },
+  // Not over the setup screens: shown when setup is finished instead.
+  popup() {
+    const u = this.unread();
+    if (!u.length || $('setup').classList.contains('open')) return;
+    $('msgPopList').innerHTML = u.map(this.html).join('');
+    $('msgPop').classList.add('open');
+  },
+  ok() {
+    const ids = this.unread().map(m => m.id);
+    this.readIds = [...this.readIds, ...ids].slice(-300); this.unsent.push(...ids); this.save();
+    $('msgPop').classList.remove('open');
+    this.sendReads();
+  },
+};
+$('msgPopOk').onclick = () => inbox.ok();
 
 async function loadRaceList() {
   if (races.length) return races;
@@ -1003,6 +1050,7 @@ const setup = {
     saveProfile();
     sync.soon();
     this.close();
+    inbox.check(true);   // the new race may have its own messages; shows any waiting
     try {
       await showRace(profile.raceId);
       setFollow(false);
@@ -1269,9 +1317,13 @@ setInterval(() => { renderGps(); renderRec(); renderDebug(); setup.tick(); }, 10
 // Race control: check in at start-up, when signal returns, on reopening, and
 // once a minute (a send only happens when something changed, or hourly).
 sync.soon(4000);
-addEventListener('online', () => sync.soon());
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') sync.soon(); });
-setInterval(() => sync.send(), 60000);
+inbox.render();
+setTimeout(() => inbox.check(true), 4500);
+addEventListener('online', () => { sync.soon(); inbox.check(true); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { sync.soon(); inbox.check(true); } });
+setInterval(() => { sync.send(); inbox.check(); }, 60000);
+// The app is running: take down the start-up screen.
+$('boot').remove();
 
 // =====================================================================
 // Service worker

@@ -21,14 +21,17 @@ async function newPage({ fresh = false, ...opts } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 800 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, ...opts });
   if (!fresh) await ctx.addInitScript(p => { if (!localStorage.getItem('profile')) localStorage.setItem('profile', p); }, JSON.stringify(SET_UP));
   // Race control: never touch the real database from tests; record what the app sends.
+  // page.messages = what race control "has posted" for get_messages.
   const calls = [];
+  let page;
   await ctx.route('**/*.supabase.co/**', route => {
-    const req = route.request();
-    calls.push({ fn: req.url().split('/rpc/')[1], body: JSON.parse(req.postData() || '{}') });
+    const req = route.request(), fn = req.url().split('/rpc/')[1];
+    calls.push({ fn, body: JSON.parse(req.postData() || '{}') });
+    if (fn === 'get_messages') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(page.messages) });
     return route.fulfill({ status: 204, body: '' });
   });
-  const page = await ctx.newPage();
-  page.calls = calls;
+  page = await ctx.newPage();
+  page.calls = calls; page.messages = [];
   const errors = [];
   page.on('console', m => m.type() === 'error' && errors.push(m.text()));
   page.on('pageerror', e => errors.push(e.message));
@@ -55,6 +58,19 @@ try {
     await page.click('#locateBtn');
     await page.waitForFunction(() => document.getElementById('gpsBadges').textContent.includes('blocked'), null, { timeout: 10000 }).catch(() => {});
     check('Permission denied shows "Location blocked" with instructions', (await text(page, '#gpsBadges')).includes('Location blocked') && (await text(page, '#gpsHint')).includes('Settings'), await text(page, '#gpsBadges'));
+    await ctx.close();
+  }
+
+  // ------------------------------------------------------------------
+  // Start-up screen: says "Loading" at once; after 5 s of a stuck load, says what to do
+  {
+    const { ctx, page } = await newPage();
+    await ctx.route('**/app.js', r => r.abort());       // a load that never finishes
+    await page.goto(URL);
+    check('Start-up screen says Loading straight away', (await text(page, '#boot')).includes('Loading SkyRunZim') && !(await page.locator('#bootSlow').isVisible()));
+    await page.waitForTimeout(5500);
+    check('After 5 s it says to turn off wifi and mobile data and reopen', await page.locator('#bootSlow').isVisible() &&
+      (await text(page, '#bootSlow')).includes('wifi and mobile data'), await text(page, '#bootSlow'));
     await ctx.close();
   }
 
@@ -309,6 +325,29 @@ try {
   check('Medical guide: quick-reference button jumps to the right section', jumped);
   await shot(page, '7-medical');
   await page.click('#medClose');
+
+  // ------------------------------------------------------------------
+  // Start-up screen and messages from race control
+  check('Start-up screen is gone once the app is running', await page.locator('#boot').count() === 0);
+  page.messages = [
+    { id: 7, created_at: '2026-11-20T15:00:00Z', race_id: null, body: 'Race briefing moved to 17:00.' },
+    { id: 8, created_at: '2026-11-20T16:00:00Z', race_id: 'the-challenge', body: 'Challenge start moved to 06:30.' },
+  ];
+  await page.evaluate(() => inbox.check(true));
+  await page.waitForSelector('#msgPop.open', { timeout: 5000 }).catch(() => {});
+  const pop = await text(page, '#msgPop');
+  check('New messages from race control pop up', pop.includes('Race briefing moved to 17:00.') && pop.includes('Challenge start moved to 06:30.') &&
+    pop.includes('All runners') && pop.includes('Your race'), pop);
+  await shot(page, '10-message');
+  await page.click('#msgPopOk');
+  await page.waitForFunction(() => !JSON.parse(localStorage.getItem('msgReadUnsent')).length, null, { timeout: 5000 }).catch(() => {});
+  const mr = page.calls.filter(c => c.fn === 'mark_read').pop();
+  check('Read messages are reported back to race control', !!mr && mr.body.p_ids.join() === '7,8', JSON.stringify(mr && mr.body));
+  await page.evaluate(() => inbox.check(true)); await page.waitForTimeout(300);
+  check('A message pops up only once', !(await page.locator('#msgPop').evaluate(e => e.classList.contains('open'))));
+  check('Messages stay in the menu to read offline', (await page.locator('#msgList').textContent()).includes('Race briefing moved to 17:00.'));
+  const gm = page.calls.filter(c => c.fn === 'get_messages').pop();
+  check('Messages are asked for by the runner\'s race', gm.body.p_race === await page.evaluate(() => profile.raceId), JSON.stringify(gm.body));
 
   // ------------------------------------------------------------------
   // The runner's route
