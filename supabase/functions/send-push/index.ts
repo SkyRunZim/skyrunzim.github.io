@@ -49,7 +49,8 @@ async function vapidHeader(v, endpoint, subject) {
 async function sendPush(v, endpoint, subject) {
   return fetch(endpoint, {
     method: 'POST',
-    headers: { Authorization: await vapidHeader(v, endpoint, subject), TTL: '86400', Urgency: 'high', 'Content-Length': '0' },
+    headers: { Authorization: await vapidHeader(v, endpoint, subject), TTL: '86400', Urgency: 'high' },
+    body: new Uint8Array(0),   // an empty body, sent with Content-Length: 0
   });
 }
 // --- end vapid ---
@@ -61,32 +62,40 @@ Deno.serve(async req => {
 
     // Organisers only: the caller's login must be on the organisers list.
     const jwt = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
-    const { data: { user } } = await admin.auth.getUser(jwt);
-    const email = (user && user.email || '').toLowerCase();
+    const { data: who, error: authErr } = await admin.auth.getUser(jwt);
+    if (authErr || !who.user) return json({ error: `Could not check the organiser login: ${authErr ? authErr.message : 'no user'}` }, 403);
+    const email = (who.user.email || '').toLowerCase();
     const { data: org } = await admin.from('organisers').select('email').eq('email', email).maybeSingle();
-    if (!org) return json({ error: 'Organisers only' }, 403);
+    if (!org) return json({ error: `Organisers only (${email} is not on the organisers list)` }, 403);
+
+    // The secret key, pasted into Edge Functions > Secrets.
+    const raw = (Deno.env.get('VAPID_PRIVATE_JWK') || '').trim().replace(/^['"](\{.*\})['"]$/, '$1');
+    if (!raw) return json({ error: 'The VAPID_PRIVATE_JWK secret is missing: add it in Edge Functions > Secrets' }, 500);
+    let v;
+    try { v = await loadVapid(raw); }
+    catch (err) { return json({ error: `The VAPID_PRIVATE_JWK secret is not right (${err.message}): paste the whole line starting { and ending }` }, 500); }
 
     const { message_id } = await req.json();
     const { data: msg, error } = await admin.from('messages').select('id, race_id').eq('id', message_id).single();
-    if (error) return json({ error: 'Message not found' }, 404);
+    if (error) return json({ error: `Message ${message_id} not found` }, 404);
 
     let q = admin.from('push_subscriptions').select('device_id, endpoint');
     if (msg.race_id) q = q.eq('race_id', msg.race_id);
-    const { data: subs } = await q;
+    const { data: subs, error: subErr } = await q;
+    if (subErr) return json({ error: `Could not read the phones list: ${subErr.message}` }, 500);
 
-    const v = await loadVapid(Deno.env.get('VAPID_PRIVATE_JWK'));
-    let sent = 0, failed = 0;
+    let sent = 0, failed = 0, why = '';
     const gone = [];
     await Promise.all((subs || []).map(async s => {
       try {
         const res = await sendPush(v, s.endpoint, SUBJECT);
         if (res.status === 404 || res.status === 410) gone.push(s.device_id);   // phone unsubscribed or app removed
         else if (res.ok) sent++;
-        else { failed++; console.warn('push refused', res.status, await res.text()); }
-      } catch (err) { failed++; console.warn('push failed', String(err)); }
+        else { failed++; why ||= `${new URL(s.endpoint).host} said ${res.status} ${(await res.text()).slice(0, 160)}`; }
+      } catch (err) { failed++; why ||= `${new URL(s.endpoint).host}: ${String(err).slice(0, 160)}`; }
     }));
     if (gone.length) await admin.from('push_subscriptions').delete().in('device_id', gone);
-    return json({ sent, failed, removed: gone.length });
+    return json({ sent, failed, removed: gone.length, phones: (subs || []).length, why });
   } catch (err) {
     return json({ error: String(err && err.message || err) }, 500);
   }

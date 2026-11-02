@@ -259,6 +259,7 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
         <textarea id="body" maxlength="600" placeholder="e.g. Race briefing moved to 17:00 at the Far and Wide base. Bring your mandatory kit for inspection."></textarea>
         <div class="notice" id="bodyCount">0 / 600</div>
         <div><button class="btn primary" type="submit" id="postBtn">Send message</button></div>
+        <div class="notice warnbar" id="sendNote" hidden></div>
         <div class="notice">Runners cannot reply in the app. For anything urgent, also use WhatsApp or a phone call.</div>
       </form>
       <div style="display:grid;gap:10px;align-content:start" id="msgList"></div>
@@ -498,6 +499,8 @@ function renderMsgs() {
     read by ${readBy(m.id)} of ${audience(m)}${m.author ? ' · from ' + esc(m.author) : ''}
     <button class="btn linkish" data-del="${m.id}">Delete</button></div><div style="white-space:pre-wrap">${esc(m.body)}</div></div>`).join('');
 }
+// The result of the last send stays on screen (a toast vanishes too fast to read).
+function notice(t) { $('sendNote').textContent = t; $('sendNote').hidden = false; }
 $('body').addEventListener('input', () => { $('bodyCount').textContent = `${$('body').value.length} / 600`; });
 $('composer').addEventListener('submit', async e => {
   e.preventDefault();
@@ -513,8 +516,16 @@ $('composer').addEventListener('submit', async e => {
   // Wake up the phones that have notifications on.
   const { data: pushed, error: pushErr } = await db.functions.invoke('send-push', { body: { message_id: posted.id } });
   $('postBtn').disabled = false;
-  toast(pushErr ? `Sent to ${who}. Phones see it when they open the app (notifications are not set up: ${pushErr.message}).`
-    : `Sent to ${who}: ${pushed.sent} phone${pushed.sent === 1 ? '' : 's'} notified now. The rest see it when they open the app.`);
+  if (pushErr) {
+    // Show the sending program's own reason, so problems can be fixed.
+    let why = pushErr.message;
+    try { const b = await pushErr.context.json(); if (b && b.error) why = `${b.error} (${pushErr.context.status})`; } catch {}
+    notice(`Message sent to ${who}: phones see it when they open the app. Notifications did not go out: ${why}`);
+  } else {
+    notice(pushed.phones === 0 ? `Message sent to ${who}. No phones have notifications turned on yet, so they see it when they open the app.`
+      : `Message sent to ${who}: ${pushed.sent} of ${pushed.phones} phone${pushed.phones === 1 ? '' : 's'} notified now` +
+      (pushed.failed ? `, ${pushed.failed} refused${pushed.why ? ' (' + pushed.why + ')' : ''}` : '') + '. The rest see it when they open the app.');
+  }
 });
 $('msgList').addEventListener('click', async e => {
   const b = e.target.closest('[data-del]');
