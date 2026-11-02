@@ -20,15 +20,23 @@ export const metres = (a, b) => {
 };
 const tag = (s, t) => { const m = s.match(new RegExp(`<${t}>([\\s\\S]*?)</${t}>`)); return m ? m[1].trim() : null; };
 
-// Adds the checkpoints in one race's GPX file to the shared list. A numbered
-// series with more than 20 members is an export of route points, not checkpoints.
-export function addCheckpoints(all, xml, raceId) {
-  const w = [...xml.matchAll(/<wpt\s[^>]*?lat="([-\d.]+)"[^>]*?lon="([-\d.]+)"[^>]*>([\s\S]*?)<\/wpt>/g)]
-    .map(m => ({ lat: +m[1], lon: +m[2], name: tag(m[3], 'name') || 'Checkpoint' }));
+// The waypoints in a GPX file, as they are (dashboard/race-waypoints.json
+// keeps these for the shipped files, so the dashboard needn't download them).
+export const readWaypoints = xml => [...xml.matchAll(/<wpt\s[^>]*?lat="([-\d.]+)"[^>]*?lon="([-\d.]+)"[^>]*>([\s\S]*?)<\/wpt>/g)]
+  .map(m => ({ lat: +m[1], lon: +m[2], name: tag(m[3], 'name') || 'Checkpoint' }));
+
+// Adds the checkpoints in one race's GPX file (or its waypoints) to the shared
+// list. A numbered series with more than 20 members is an export of route
+// points, not checkpoints.
+export function dropRouteExports(w) {
   const series = name => name.replace(/[-\s]\d+$/, '');
   const count = {};
   w.forEach(q => { count[series(q.name)] = (count[series(q.name)] || 0) + 1; });
-  for (const q of w.filter(q => count[series(q.name)] <= 20)) {
+  return w.filter(q => count[series(q.name)] <= 20);
+}
+export function addCheckpoints(all, xmlOrWaypoints, raceId) {
+  const w = typeof xmlOrWaypoints === 'string' ? readWaypoints(xmlOrWaypoints) : xmlOrWaypoints;
+  for (const q of dropRouteExports(w)) {
     if (all.some(c => c.source === q.name && metres([c.lat, c.lon], [q.lat, q.lon]) < 30)) continue;
     const name = q.name.replace(/([A-Za-z])(\d+)$/, '$1 $2');
     const kind = /water/i.test(name) ? 'water' : /station|aid|checkpoint|\bcp\b/i.test(name) ? 'station' : 'point';
@@ -61,6 +69,25 @@ export function heightLookup(grid, values) {
     const ax = fx - x0, ay = fy - y0, i = y0 * W + x0, r = values;
     return ((r[i] * (1 - ax) + r[i + 1] * ax) * (1 - ay) + (r[i + W] * (1 - ax) + r[i + W + 1] * ax) * ay) * scale;
   };
+}
+
+// A small GPX holding just what the route was built from: its checkpoints
+// and its track(s) with heights. Building it again gives the same route.
+// Used to keep large uploaded files compact.
+export function compactGpx(route, waypoints) {
+  const x = s => String(s).replace(/[<&>"]/g, c => ({ '<': '&lt;', '&': '&amp;', '>': '&gt;', '"': '&quot;' }[c]));
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="SkyRunZim race control" xmlns="http://www.topografix.com/GPX/1/1">\n` +
+    dropRouteExports(waypoints).map(w => `<wpt lat="${w.lat}" lon="${w.lon}"><name>${x(w.name)}</name></wpt>\n`).join('') +
+    route.stages.map(st => `<trk><name>${x(st.name)}</name><trkseg>\n` +
+      st.pts.map(p => `<trkpt lat="${p[0]}" lon="${p[1]}">${p[2] == null ? '' : `<ele>${p[2]}</ele>`}</trkpt>`).join('\n') + '\n</trkseg></trk>\n').join('') +
+    '</gpx>\n';
+}
+
+// True if the file's route has no usable heights (none, or all zero), so they
+// must be looked up. Cheap: lets the dashboard skip loading height data.
+export function needsHeights(xml) {
+  const ele = [...xml.matchAll(/<(?:trkpt|rtept)\s[\s\S]*?<\/(?:trkpt|rtept)>/g)].map(m => tag(m[0], 'ele'));
+  return ele.some(e => e === null) || ele.every(e => +e === 0);
 }
 
 // race: { id, name, version, start, map, practice, stages: [{ name, short }] (multi-day only) }

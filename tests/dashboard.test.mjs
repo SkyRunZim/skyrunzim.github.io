@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { addCheckpoints, buildRace, heightLookup } from '../dashboard/route-build.mjs';
+import { addCheckpoints, buildRace, compactGpx, heightLookup, readWaypoints } from '../dashboard/route-build.mjs';
 
 const PORT = 8096, URL = `http://localhost:${PORT}/dashboard/`;
 const server = spawn(process.execPath, ['tools/serve.mjs', String(PORT)]);
@@ -27,6 +27,18 @@ try {
     const differ = races.filter(r => (r.map || 'nyanga') === 'nyanga')
       .filter(r => JSON.stringify(buildRace(r, readFileSync(`races/${r.file}`, 'utf8'), pool, look).route) !== readFileSync(`data/races/${r.id}.json`, 'utf8'));
     check('Dashboard builds every Nyanga route exactly as the app has it', !differ.length, differ.map(r => r.id).join(', '));
+    // The compact copy kept of a big file builds the same route again.
+    const goat = races.find(r => r.id === 'the-goat'), goatXml = readFileSync('races/the-goat.gpx', 'utf8');
+    const { route } = buildRace(goat, goatXml, pool, look);
+    const small = compactGpx(route, readWaypoints(goatXml));
+    const again = buildRace(goat, small, pool, look).route;
+    check('A big GPX is kept in compact form that rebuilds the same route', JSON.stringify(again) === JSON.stringify(route) && small.length < goatXml.length / 3,
+      `${(goatXml.length / 1e6).toFixed(1)} MB → ${(small.length / 1e6).toFixed(2)} MB`);
+    // The checkpoints file the dashboard loads matches the GPX files.
+    const wf = JSON.parse(readFileSync('dashboard/race-waypoints.json', 'utf8')), pool2 = [];
+    for (const r of races) addCheckpoints(pool2, wf[r.id], r.id);
+    check('The small checkpoints file gives the same checkpoints as the GPX files', JSON.stringify(pool2) === JSON.stringify(pool),
+      `${readFileSync('dashboard/race-waypoints.json').length} bytes`);
   }
 
   // ------------------------------------------------------------------
@@ -79,10 +91,26 @@ try {
   check('Publishing tells that race\'s runners', !!msg && msg.race_id === 'the-challenge' && msg.body.startsWith('The route for The Challenge has been updated'));
   check('Publishing confirms how many phones were notified', (await page.locator('#toast').innerText()).includes('3 phones notified'));
 
-  // A wrong file: Back2Back needs one route per day.
+  // A wrong file: Back2Back needs one route per day. Said on the card.
   await page.setInputFiles('.racecard[data-race="back2back"] input[type=file]', 'races/the-challenge.gpx');
-  await page.waitForTimeout(800);
-  check('A file with the wrong number of days is refused before any preview', await page.locator('#routeModal').isHidden());
+  await page.waitForSelector('.racecard[data-race="back2back"] .cardstatus.bad', { timeout: 10000 }).catch(() => {});
+  const refusal = await page.locator('.racecard[data-race="back2back"] .cardstatus').innerText().catch(() => '');
+  check('A file with the wrong number of days is refused on the card, before any preview', await page.locator('#routeModal').isHidden() &&
+    refusal.includes('1 route') && refusal.includes('2'), refusal);
+
+  // The biggest file (the GOAT, 5 MB): previews without downloading other races' files, kept compact.
+  const fetched = [];
+  page.on('request', r => fetched.push(r.url()));
+  const t0 = Date.now();
+  await page.setInputFiles('.racecard[data-race="the-goat"] input[type=file]', 'races/the-goat.gpx');
+  const shown = await page.waitForSelector('#routeModal:not([hidden])', { timeout: 20000 }).then(() => true).catch(() => false);
+  const secs = ((Date.now() - t0) / 1000).toFixed(1);
+  check('The GOAT\'s 5 MB file previews quickly', shown, `${secs} s`);
+  check('No other race\'s GPX file or height data is downloaded for a file with heights', !fetched.some(u => /\/races\/.*\.gpx|nyanga-heights/.test(u)),
+    fetched.filter(u => /\.gpx|heights/.test(u)).join(' '));
+  check('The GOAT previews as no change', /Distance\s+114.9 km\s+114.9 km\s*\n/.test(await page.locator('#rmTable').innerText()));
+  check('The GOAT\'s file is kept compact', await page.evaluate(() => pending.gpx.length < 1.5e6), await page.evaluate(() => `${(pending.gpx.length / 1e6).toFixed(2)} MB`));
+  await page.click('#rmClose');
   check('No page errors', errors.length === 0, errors.join(' | '));
 } catch (err) {
   check('Dashboard test run crashed', false, err.message);

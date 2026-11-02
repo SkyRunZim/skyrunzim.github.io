@@ -184,6 +184,10 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
 .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 14px; text-align: center; font-size: 13px; color: var(--fg-3); cursor: pointer; }
 .drop.over { border-color: var(--sun); background: var(--warn-bg); color: var(--fg); }
 .drop input { display: none; }
+.cardstatus { font-size: 13px; font-weight: 600; color: var(--brand); background: var(--bg); border-radius: 8px; padding: 8px 10px; }
+.cardstatus.bad { color: var(--bad); background: var(--bad-bg); }
+.spin { display: inline-block; width: 12px; height: 12px; margin-right: 8px; vertical-align: -1px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--brand); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .hist { font-size: 12px; color: var(--fg-3); display: grid; gap: 4px; }
 .hist div { display: flex; gap: 6px; align-items: center; justify-content: space-between; }
 .hist .btn { padding: 2px 8px; font-size: 12px; }
@@ -642,37 +646,65 @@ $('raceGrid').addEventListener('click', async e => {
     }
     if (o) {
       const id = o.dataset.original, m = raceMeta.find(x => x.id === id), b = RACES.find(x => x.id === id);
-      const [route, gpx] = await Promise.all([fetch('../' + b.file).then(x => x.json()), fetch('../races/' + m.file).then(x => x.text())]);
-      preview(id, { route, summary: { ...b }, gpx, fileName: m.file, note: `Restored the route that shipped with the app (v${b.version})` });
+      cardStatus(id, '<span class="spin"></span>Loading the original route…');
+      waypointFile ||= fetch('race-waypoints.json').then(x => x.json());
+      const [route, shipped, { compactGpx }] = await Promise.all([fetch('../' + b.file).then(x => x.json()), waypointFile, lib()]);
+      await preview(id, { route, summary: { ...b }, gpx: compactGpx(route, shipped[id] || []), fileName: m.file, note: `Restored the route that shipped with the app (v${b.version})` });
+      cardStatus(id, '');
     }
   } catch (err) { toast('Could not load that version: ' + (err.message || err)); }
 });
 
+// Progress and problems are shown on the race's own card.
+function cardStatus(id, html, kind = '') {
+  const card = document.querySelector(`.racecard[data-race="${CSS.escape(id)}"]`);
+  if (!card) return;
+  let el = card.querySelector('.cardstatus');
+  if (!el) { el = document.createElement('div'); card.querySelector('.drop').after(el); }
+  el.className = 'cardstatus ' + kind; el.innerHTML = html; el.hidden = !html;
+}
+let waypointFile;
 async function fromFile(id, file) {
-  const m = raceMeta.find(x => x.id === id);
+  const m = raceMeta.find(x => x.id === id), step = t => cardStatus(id, `<span class="spin"></span>${esc(t)}`);
   try {
+    step(`Reading ${file.name}…`);
     const xml = await file.text();
-    if (!/<gpx[\s>]/i.test(xml)) throw new Error(`${file.name} is not a GPX file`);
-    const { addCheckpoints, buildRace, heightLookup } = await lib();
-    // Heights for files without them (Nyanga race map area only).
-    if (heights === undefined) {
+    if (!/<gpx[\s>]/i.test(xml)) throw new Error(`${file.name} is not a GPX file. Export the route from Garmin, Strava etc. as GPX.`);
+    const { addCheckpoints, buildRace, heightLookup, needsHeights, readWaypoints } = await lib();
+    // Heights for files without them (Nyanga race map area only): 5 MB, so only when needed.
+    if (needsHeights(xml) && heights === undefined) {
+      step('This file has no heights: loading the height data for the race area (5 MB, once)…');
       try {
         const [grid, bin] = await Promise.all([fetch('nyanga-heights.json').then(r => r.json()), fetch('nyanga-heights.bin').then(r => r.arrayBuffer())]);
         heights = heightLookup(grid, new Float32Array(bin));
       } catch { heights = null; }
     }
-    // Checkpoints are shared between races: gather every race's current file, with this new one in its place.
-    const { data: files } = await db.from('race_routes').select('race_id, version, gpx').order('version', { ascending: false });
-    const pool = [];
+    // Checkpoints are shared between races: every race's current waypoints, with this file's in its place.
+    step('Gathering the checkpoints shared with other races…');
+    waypointFile ||= fetch('race-waypoints.json').then(r => r.json());
+    const shipped = await waypointFile, pool = [];
     for (const r of raceMeta) {
-      const latest = (files || []).find(f => f.race_id === r.id && f.gpx && f.version > (RACES.find(b => b.id === r.id) || { version: 0 }).version);
-      const text = r.id === id ? xml : latest ? latest.gpx : await fetch('../races/' + r.file).then(x => x.text());
-      addCheckpoints(pool, text, r.id);
+      const b = RACES.find(x => x.id === r.id), p = latestOf(r.id);
+      let wp = shipped[r.id] || [];
+      if (r.id === id) wp = readWaypoints(xml);
+      else if (p && b && p.version > b.version) {
+        const { data } = await db.from('race_routes').select('gpx').eq('id', p.id).single();
+        if (data && data.gpx) wp = readWaypoints(data.gpx);
+      }
+      addCheckpoints(pool, wp, r.id);
     }
+    step('Building the route…');
+    await new Promise(r => setTimeout(r, 30));   // let the message show before the work
     const built = buildRace({ ...m, version: 0 }, xml, pool, heights || undefined);
-    preview(id, { route: built.route, summary: built.summary, gpx: xml, fileName: file.name, heightsMissing: built.heightsMissing });
-  } catch (err) { alert(`${m.name}: ${err.message || err}`); }
+    // Keep the file for reference; a big one (Garmin exports run to MBs) in compact form.
+    const keep = xml.length <= 1e6 ? xml : (await lib()).compactGpx(built.route, readWaypoints(xml));
+    step('Drawing the preview…');
+    await preview(id, { route: built.route, summary: built.summary, gpx: keep, fileName: file.name, heightsMissing: built.heightsMissing });
+    cardStatus(id, '');
+  } catch (err) { cardStatus(id, `✕ ${esc(err.message || err)}`, 'bad'); }
 }
+// A file dropped beside a drop box must not open in the browser (and leave the dashboard).
+['dragover', 'drop'].forEach(t => window.addEventListener(t, e => { if (!e.target.closest || !e.target.closest('.drop')) e.preventDefault(); }));
 
 // The preview: current and new route on the race map, with what changes.
 let pending = null, rmMap = null;

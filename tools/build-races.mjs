@@ -7,7 +7,7 @@
 // Usage: node tools/build-races.mjs
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { fromFile } from 'geotiff';
-import { addCheckpoints, buildRace, heightLookup } from '../dashboard/route-build.mjs';
+import { addCheckpoints, buildRace, dropRouteExports, heightLookup, readWaypoints } from '../dashboard/route-build.mjs';
 
 const races = JSON.parse(readFileSync('races/races.json', 'utf8'));
 mkdirSync('data/races', { recursive: true });
@@ -22,9 +22,14 @@ for (const f of ['tools/data/S19_00_E032_00.tif', 'tools/data/S18_00_E032_00.tif
 }
 const elevation = (lat, lon) => { for (const look of dem) { const h = look(lat, lon); if (h != null) return h; } return null; };
 
-// Checkpoints from every race file, shared between races.
-const allCheckpoints = [];
-for (const race of races) addCheckpoints(allCheckpoints, readFileSync(`races/${race.file}`, 'utf8'), race.id);
+// Checkpoints from every race file, shared between races. Each file's
+// waypoints are also saved for the dashboard (a few KB, not the whole files).
+const allCheckpoints = [], waypoints = {};
+for (const race of races) {
+  waypoints[race.id] = dropRouteExports(readWaypoints(readFileSync(`races/${race.file}`, 'utf8')));
+  addCheckpoints(allCheckpoints, waypoints[race.id], race.id);
+}
+writeFileSync('dashboard/race-waypoints.json', JSON.stringify(waypoints));
 
 const index = [];
 for (const race of races) {
