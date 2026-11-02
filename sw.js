@@ -1,7 +1,7 @@
 // Offline worker. Bump SHELL on every release (match APP_VERSION in app.js);
 // that is what makes phones pick up new files. The tile cache is kept across
 // releases so runners don't have to download the map again.
-const SHELL = 'shell-v12';
+const SHELL = 'shell-v13';
 const TILES = 'tiles-v2';
 const CORE = [
   './', 'index.html', 'app.js', 'manifest.json', 'icon-192.png', 'icon-512.png',
@@ -40,6 +40,8 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
+  // The organisers' dashboard pages are separate from the runner app: always from the internet.
+  if (/\/dashboard/.test(new URL(req.url).pathname)) return;
 
   // Map tiles: from the phone first; fetch and keep any that are missing.
   if (/\/tiles[\w-]*\//.test(req.url) && req.url.endsWith('.webp')) {

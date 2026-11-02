@@ -1,6 +1,6 @@
 // SkyRunZim: offline race map with live GPS, run recording and course.
 // Keep APP_VERSION in step with SHELL in sw.js.
-const APP_VERSION = 'v12 (20 Oct 2026)';
+const APP_VERSION = 'v13 (2 Nov 2026)';
 const TILE_CACHE = 'tiles-v2';
 // The maps the app can show. Each race says which map it uses ("map" in the
 // race list). Bump a map's tag when its pieces change, so phones download again.
@@ -744,9 +744,69 @@ $('dlDelete').onclick = async () => {
 // Route points are projected to flat metres; fine at this scale (~40 km).
 const LAT0 = -18.3, KX = 111320 * Math.cos(LAT0 * Math.PI / 180), KY = 110574;
 let course = null, courseLayer = null, lastAlong = null, races = [];
-// The runner's details stay on this phone only.
+// The runner's details are kept on this phone, and sent to race control only
+// if the runner ticks "share with the race organisers".
 const profile = (() => { try { return JSON.parse(pref('profile')) || {}; } catch { return {}; } })();
 const saveProfile = () => pref('profile', JSON.stringify(profile));
+
+// =====================================================================
+// Race control: with the runner's consent, their name, bib, race and app
+// readiness (NEVER their position) go to the organisers' dashboard
+// (/dashboard/, database: supabase/schema.sql). The whole state is sent each
+// time, so a send that fails for lack of signal is simply tried again later.
+// =====================================================================
+const RACE_CONTROL = { url: 'https://rmyqovbgcqgcvxwbpwgv.supabase.co', key: 'sb_publishable_8BAttBsLnJh--ADME9dMFA_0QHOg4qu' }; // public key
+const phoneType = () => (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  ? 'iPhone' : /Android/i.test(navigator.userAgent) ? 'Android' : 'Other');
+
+const sync = {
+  timer: null, busy: false,
+  deviceId() {
+    if (!profile.deviceId) {
+      profile.deviceId = crypto.randomUUID ? crypto.randomUUID()
+        : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, c => (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16));
+      saveProfile();
+    }
+    return profile.deviceId;
+  },
+  state() {
+    const r = races.find(x => x.id === profile.raceId);
+    return {
+      p_device: this.deviceId(), p_name: profile.name || '', p_bib: profile.bib || '', p_race: profile.raceId || '',
+      p_setup: !!profile.setupDone, p_map: mapSaved((r && r.map) || 'nyanga'),
+      p_location: gps.perm === 'granted' || !!gps.fix, p_app: APP_VERSION.split(' ')[0], p_phone: phoneType(),
+    };
+  },
+  // Several changes in a row become one send.
+  soon(ms = 1500) { clearTimeout(this.timer); this.timer = setTimeout(() => this.send(), ms); },
+  async send() {
+    if (profile.forgetPending) return this.forget();
+    if (!profile.share || !profile.name || this.busy) return;
+    this.busy = true;
+    try {
+      await loadRaceList().catch(() => {});
+      const body = this.state(), sig = JSON.stringify(body);
+      // Unchanged and sent within the hour: nothing to do (hourly = "last seen").
+      if (sig === profile.syncedSig && Date.now() - (profile.syncedAt || 0) < 3600e3) return;
+      await this.rpc('register_runner', body);
+      Object.assign(profile, { syncedSig: sig, syncedAt: Date.now() }); saveProfile();
+    } catch (err) {
+      console.warn('[race control] not sent, will try again', err.message || err);
+    } finally { this.busy = false; }
+  },
+  // The runner unticked sharing: remove them from race control completely.
+  async forget() {
+    profile.forgetPending = true; delete profile.syncedSig; saveProfile();
+    try { await this.rpc('forget_runner', { p_device: this.deviceId() }); profile.forgetPending = false; saveProfile(); }
+    catch (err) { console.warn('[race control] not removed yet, will try again', err.message || err); }
+  },
+  async rpc(fn, body) {
+    const res = await fetch(`${RACE_CONTROL.url}/rest/v1/rpc/${fn}`, {
+      method: 'POST', headers: { apikey: RACE_CONTROL.key, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`${fn} ${res.status}`);
+  },
+};
 
 async function loadRaceList() {
   if (races.length) return races;
@@ -785,6 +845,7 @@ function renderRaceInfo() {
     ['Bib number', profile.bib || '-'],
     ['Race', info ? `${info.name}, ${info.stages ? info.stages.length + ' days, ' : ''}${info.distanceKm} km, ${info.climbM} m climb` : 'Not chosen'],
     ['Route version', info ? String(info.version) : '-'],
+    ['Shared with organisers', profile.share ? 'Yes' : 'No'],
   ];
   $('raceText').innerHTML = rows.map(([k, v]) => `<div class="row"><span>${escapeHtml(k)}</span><b>${escapeHtml(v)}</b></div>`).join('');
 }
@@ -949,6 +1010,7 @@ const setup = {
     profile.setupDone = true;
     profile.raceId = this.picked;
     saveProfile();
+    sync.soon();
     this.close();
     try {
       await showRace(profile.raceId);
@@ -978,9 +1040,12 @@ const setup = {
 
   details() {
     return `<h2>Your details</h2>
-      <p class="small">Saved only on this phone. Used on your recordings and, later, in emergency messages.</p>
+      <p class="small">Saved on this phone and used on your recordings.</p>
       <label class="field">Your name<input id="suName" autocomplete="name" value="${escapeHtml(profile.name || '')}"></label>
       <label class="field">Bib number (optional)<input id="suBib" inputmode="numeric" value="${escapeHtml(profile.bib || '')}"></label>
+      <label class="tick"><input type="checkbox" id="suShare"${profile.share ? ' checked' : ''}>
+        <span><b>Share with the race organisers</b>: your name, bib, race and whether the app is ready (map saved, location on),
+        so they can check every runner is set up. <b>Your location is never shared.</b> Untick any time to be removed.</span></label>
       <button class="btn" id="suNext">${this.changing ? 'Save' : 'Next'}</button>
       ${this.changing ? '<button class="btn secondary" id="suCancel">Cancel</button>' : '<button class="btn secondary" id="suBack">Back</button>'}`;
   },
@@ -989,7 +1054,11 @@ const setup = {
     const check = () => { next.disabled = !name.value.trim(); };
     name.oninput = check; check();
     next.onclick = () => {
-      profile.name = name.value.trim(); profile.bib = $('suBib').value.trim(); saveProfile();
+      const wasShared = !!profile.share;
+      profile.name = name.value.trim(); profile.bib = $('suBib').value.trim(); profile.share = $('suShare').checked;
+      if (profile.share) profile.forgetPending = false;
+      saveProfile();
+      if (wasShared && !profile.share) sync.forget(); else if (profile.share && (this.changing || wasShared)) sync.soon();
       if (this.changing) { this.close(); renderRaceInfo(); toast('Details saved.'); } else this.go('race');
     };
     if ($('suBack')) $('suBack').onclick = () => this.go('welcome');
@@ -1088,6 +1157,7 @@ const setup = {
       ${row(!!r, r ? `Race: ${escapeHtml(r.name)}, ${r.distanceKm} km` : 'No race chosen')}
       ${row(mapSaved(this.mapId()), mapSaved(this.mapId()) ? 'Map saved for offline use' : 'Map NOT saved: download it from the menu before you go')}
       ${row(!!gps.fix, gps.fix ? 'Location working' : 'Location not found yet: it will keep looking')}
+      ${row(!!profile.share, profile.share ? 'Shared with the race organisers' : 'Not shared with the race organisers (you can change this in Edit details)')}
       <p class="small">Keep the app open on screen while you run. It is a navigation aid: follow the course markings and marshals.</p>
       <button class="btn" id="suDone">Open my map</button>
       <button class="btn secondary" id="suBack">Back</button>`;
@@ -1211,6 +1281,12 @@ if (pref('gpsOn') === '1') startGps();
 renderGps();
 recorder.recover().catch(err => console.error('Could not check for unfinished recording', err));
 setInterval(() => { renderGps(); renderRec(); renderDebug(); setup.tick(); }, 1000);
+// Race control: check in at start-up, when signal returns, on reopening, and
+// once a minute (a send only happens when something changed, or hourly).
+sync.soon(4000);
+addEventListener('online', () => sync.soon());
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') sync.soon(); });
+setInterval(() => sync.send(), 60000);
 
 // =====================================================================
 // Service worker
