@@ -1,6 +1,6 @@
 // SkyRunZim: offline race map with live GPS, run recording and course.
 // Keep APP_VERSION in step with SHELL in sw.js.
-const APP_VERSION = 'v13 (2 Nov 2026)';
+const APP_VERSION = 'v14 (2 Nov 2026)';
 const TILE_CACHE = 'tiles-v2';
 // The maps the app can show. Each race says which map it uses ("map" in the
 // race list). Bump a map's tag when its pieces change, so phones download again.
@@ -744,14 +744,14 @@ $('dlDelete').onclick = async () => {
 // Route points are projected to flat metres; fine at this scale (~40 km).
 const LAT0 = -18.3, KX = 111320 * Math.cos(LAT0 * Math.PI / 180), KY = 110574;
 let course = null, courseLayer = null, lastAlong = null, races = [];
-// The runner's details are kept on this phone, and sent to race control only
-// if the runner ticks "share with the race organisers".
+// The runner's details are kept on this phone and sent to race control, so the
+// organisers can see every runner is ready (the setup screen says so).
 const profile = (() => { try { return JSON.parse(pref('profile')) || {}; } catch { return {}; } })();
 const saveProfile = () => pref('profile', JSON.stringify(profile));
 
 // =====================================================================
-// Race control: with the runner's consent, their name, bib, race and app
-// readiness (NEVER their position) go to the organisers' dashboard
+// Race control: every runner's name, bib, race and app readiness (NEVER
+// their position) go to the organisers' dashboard
 // (/dashboard/, database: supabase/schema.sql). The whole state is sent each
 // time, so a send that fails for lack of signal is simply tried again later.
 // =====================================================================
@@ -780,8 +780,7 @@ const sync = {
   // Several changes in a row become one send.
   soon(ms = 1500) { clearTimeout(this.timer); this.timer = setTimeout(() => this.send(), ms); },
   async send() {
-    if (profile.forgetPending) return this.forget();
-    if (!profile.share || !profile.name || this.busy) return;
+    if (!profile.name || this.busy) return;
     this.busy = true;
     try {
       await loadRaceList().catch(() => {});
@@ -793,12 +792,6 @@ const sync = {
     } catch (err) {
       console.warn('[race control] not sent, will try again', err.message || err);
     } finally { this.busy = false; }
-  },
-  // The runner unticked sharing: remove them from race control completely.
-  async forget() {
-    profile.forgetPending = true; delete profile.syncedSig; saveProfile();
-    try { await this.rpc('forget_runner', { p_device: this.deviceId() }); profile.forgetPending = false; saveProfile(); }
-    catch (err) { console.warn('[race control] not removed yet, will try again', err.message || err); }
   },
   async rpc(fn, body) {
     const res = await fetch(`${RACE_CONTROL.url}/rest/v1/rpc/${fn}`, {
@@ -844,9 +837,7 @@ function renderRaceInfo() {
     ['Name', profile.name || '-'],
     ['Bib number', profile.bib || '-'],
     ['Race', info ? `${info.name}, ${info.stages ? info.stages.length + ' days, ' : ''}${info.distanceKm} km, ${info.climbM} m climb` : 'Not chosen'],
-    ['Route version', info ? String(info.version) : '-'],
-    ['Shared with organisers', profile.share ? 'Yes' : 'No'],
-  ];
+    ['Route version', info ? String(info.version) : '-'],  ];
   $('raceText').innerHTML = rows.map(([k, v]) => `<div class="row"><span>${escapeHtml(k)}</span><b>${escapeHtml(v)}</b></div>`).join('');
 }
 
@@ -1043,9 +1034,8 @@ const setup = {
       <p class="small">Saved on this phone and used on your recordings.</p>
       <label class="field">Your name<input id="suName" autocomplete="name" value="${escapeHtml(profile.name || '')}"></label>
       <label class="field">Bib number (optional)<input id="suBib" inputmode="numeric" value="${escapeHtml(profile.bib || '')}"></label>
-      <label class="tick"><input type="checkbox" id="suShare"${profile.share ? ' checked' : ''}>
-        <span><b>Share with the race organisers</b>: your name, bib, race and whether the app is ready (map saved, location on),
-        so they can check every runner is set up. <b>Your location is never shared.</b> Untick any time to be removed.</span></label>
+      <p class="tick">Your name, bib, race and whether the app is ready (map saved, location on) are sent to the race organisers,
+        so they can check every runner is set up before race day. <b>Your location is never shared.</b></p>
       <button class="btn" id="suNext">${this.changing ? 'Save' : 'Next'}</button>
       ${this.changing ? '<button class="btn secondary" id="suCancel">Cancel</button>' : '<button class="btn secondary" id="suBack">Back</button>'}`;
   },
@@ -1054,11 +1044,8 @@ const setup = {
     const check = () => { next.disabled = !name.value.trim(); };
     name.oninput = check; check();
     next.onclick = () => {
-      const wasShared = !!profile.share;
-      profile.name = name.value.trim(); profile.bib = $('suBib').value.trim(); profile.share = $('suShare').checked;
-      if (profile.share) profile.forgetPending = false;
-      saveProfile();
-      if (wasShared && !profile.share) sync.forget(); else if (profile.share && (this.changing || wasShared)) sync.soon();
+      profile.name = name.value.trim(); profile.bib = $('suBib').value.trim(); saveProfile();
+      if (this.changing) sync.soon();
       if (this.changing) { this.close(); renderRaceInfo(); toast('Details saved.'); } else this.go('race');
     };
     if ($('suBack')) $('suBack').onclick = () => this.go('welcome');
@@ -1156,9 +1143,7 @@ const setup = {
       ${row(!!profile.name, `Name: ${escapeHtml(profile.name || 'not given')}${profile.bib ? ', bib ' + escapeHtml(profile.bib) : ''}`)}
       ${row(!!r, r ? `Race: ${escapeHtml(r.name)}, ${r.distanceKm} km` : 'No race chosen')}
       ${row(mapSaved(this.mapId()), mapSaved(this.mapId()) ? 'Map saved for offline use' : 'Map NOT saved: download it from the menu before you go')}
-      ${row(!!gps.fix, gps.fix ? 'Location working' : 'Location not found yet: it will keep looking')}
-      ${row(!!profile.share, profile.share ? 'Shared with the race organisers' : 'Not shared with the race organisers (you can change this in Edit details)')}
-      <p class="small">Keep the app open on screen while you run. It is a navigation aid: follow the course markings and marshals.</p>
+      ${row(!!gps.fix, gps.fix ? 'Location working' : 'Location not found yet: it will keep looking')}      <p class="small">Keep the app open on screen while you run. It is a navigation aid: follow the course markings and marshals.</p>
       <button class="btn" id="suDone">Open my map</button>
       <button class="btn secondary" id="suBack">Back</button>`;
   },

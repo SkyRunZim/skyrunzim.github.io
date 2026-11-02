@@ -319,7 +319,7 @@ function renderOverview() {
   const attention = runners.filter(r => problems(r).length).length;
   const today = runners.filter(r => hoursSince(r.last_seen) < 24).length;
   $('kpis').innerHTML = [
-    ['Signed in to the app', total, '', total ? 'Runners who agreed to share with race control' : 'No runners yet', null],
+    ['Signed in to the app', total, '', total ? 'Runners who have entered their details in the app' : 'No runners yet', null],
     ['Race-ready', readyN, `<small>/${total}</small>`, `${pct(readyN, total)}%: map saved and location on`, pct(readyN, total)],
     ['Need attention', attention, '', 'Runners with at least one problem', null, attention > 0],
     ['Seen in the last day', today, `<small>/${total}</small>`, 'Opened the app with signal', pct(today, total)],

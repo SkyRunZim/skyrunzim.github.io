@@ -68,8 +68,9 @@ try {
     check('Name is required', await page.locator('#suNext').isDisabled());
     await page.fill('#suName', 'Tendai Moyo');
     await page.fill('#suBib', '142');
-    check('Sharing with organisers is off until the runner ticks it', !(await page.locator('#suShare').isChecked()));
-    await page.check('#suShare');
+    const detailsText = await text(page, '#setupBody');
+    check('Details screen says what goes to the organisers, and that location never does', detailsText.includes('sent to the race organisers') &&
+      detailsText.includes('Your location is never shared') && !(await page.locator('#setupBody input[type="checkbox"]').count()));
     await page.click('#suNext');
     await page.waitForSelector('.racecard');
     const ready0 = await text(page, '#raceCards');
@@ -99,7 +100,7 @@ try {
       return els.filter(e => e.classList.contains('arrow')).length > 20 && els.filter(e => e.classList.contains('km')).length === 28;
     }));
     const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('profile')));
-    check('Details saved on the phone', saved.name === 'Tendai Moyo' && saved.bib === '142' && saved.raceId === 'the-challenge' && saved.share === true);
+    check('Details saved on the phone', saved.name === 'Tendai Moyo' && saved.bib === '142' && saved.raceId === 'the-challenge');
     await page.waitForFunction(() => JSON.parse(localStorage.getItem('profile')).syncedSig, null, { timeout: 8000 }).catch(() => {});
     const reg = page.calls.filter(c => c.fn === 'register_runner').pop();
     check('Race control gets name, bib, race and readiness (no position)', !!reg && reg.body.p_name === 'Tendai Moyo' && reg.body.p_bib === '142' &&
@@ -116,17 +117,9 @@ try {
     check('Edit details from the menu', (await text(page, '#raceText')).includes('143'), await text(page, '#raceText'));
     await page.waitForFunction(() => JSON.parse(localStorage.getItem('profile')).syncedSig.includes('"143"'), null, { timeout: 5000 }).catch(() => {});
     check('A changed bib is sent to race control', page.calls.filter(c => c.fn === 'register_runner').pop().body.p_bib === '143');
-    // Unticking sharing removes the runner from race control.
-    await page.click('#editDetailsBtn');
-    await page.uncheck('#suShare');
-    await page.click('#suNext');
-    await page.waitForFunction(() => JSON.parse(localStorage.getItem('profile')).forgetPending === false, null, { timeout: 5000 }).catch(() => {});
-    const forgot = page.calls.filter(c => c.fn === 'forget_runner').pop();
-    check('Unticking sharing removes the runner from race control', !!forgot && forgot.body.p_device === await page.evaluate(() => profile.deviceId));
     const before = page.calls.length;
     await page.evaluate(() => sync.send());
-    check('Nothing more is sent once sharing is off', page.calls.length === before);
-    await page.click('#menuBtn'); await page.waitForTimeout(300);
+    check('Nothing is re-sent when nothing changed', page.calls.length === before);
     await page.click('#changeRaceBtn');
     await page.waitForSelector('.racecard');
     check('Change race opens the race list', (await text(page, '#setupBody')).includes('Choose your race'));
