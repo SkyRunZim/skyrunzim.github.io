@@ -204,3 +204,50 @@ revoke all on function public.save_push(uuid, text, text, text, text) from publi
 revoke all on function public.delete_push(uuid) from public;
 grant execute on function public.save_push(uuid, text, text, text, text) to anon, authenticated;
 grant execute on function public.delete_push(uuid) to anon, authenticated;
+
+-- ================================================================ route updates
+-- Organisers publish a corrected route from the dashboard's Race settings tab
+-- (GPX dropped in, built in the browser by dashboard/route-build.mjs). Every
+-- version is kept, so a mistake can be undone by publishing an older one again.
+-- Phones check get_route_updates whenever they have signal and download any
+-- newer route with get_route; routes that ship with the app are version 1, 2...
+create table if not exists public.race_routes (
+  id           bigint generated always as identity primary key,
+  race_id      text not null,
+  version      int  not null,
+  route        jsonb not null,                 -- what the app draws: stages, points, checkpoints
+  summary      jsonb not null,                 -- its line in the race list: distance, climb...
+  gpx          text,                           -- the file it was built from, kept for reference
+  file_name    text,
+  note         text,
+  published_at timestamptz not null default now(),
+  author       text default (auth.jwt() ->> 'email'),
+  unique (race_id, version)
+);
+alter table public.race_routes enable row level security;
+drop policy if exists "organisers read routes" on public.race_routes;
+create policy "organisers read routes" on public.race_routes
+  for select to authenticated using (public.is_organiser());
+drop policy if exists "organisers publish routes" on public.race_routes;
+create policy "organisers publish routes" on public.race_routes
+  for insert to authenticated with check (public.is_organiser());
+
+-- The newest published version of each race (small: no route points).
+create or replace function public.get_route_updates()
+returns table (race_id text, version int, summary jsonb)
+language sql stable security definer set search_path = public
+as $$
+  select distinct on (r.race_id) r.race_id, r.version, r.summary
+  from public.race_routes r order by r.race_id, r.version desc;
+$$;
+-- The newest route for one race.
+create or replace function public.get_route(p_race text)
+returns jsonb
+language sql stable security definer set search_path = public
+as $$
+  select r.route from public.race_routes r where r.race_id = p_race order by r.version desc limit 1;
+$$;
+revoke all on function public.get_route_updates() from public;
+revoke all on function public.get_route(text) from public;
+grant execute on function public.get_route_updates() to anon, authenticated;
+grant execute on function public.get_route(text) to anon, authenticated;

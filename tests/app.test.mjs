@@ -2,6 +2,7 @@
 // Run: npm test   (optional: node tests/app.test.mjs <folder for screenshots>)
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 const OUT = process.argv[2] || null;
 const PORT = 8093, URL = `http://localhost:${PORT}/`;
@@ -28,10 +29,11 @@ async function newPage({ fresh = false, ...opts } = {}) {
     const req = route.request(), fn = req.url().split('/rpc/')[1];
     calls.push({ fn, body: JSON.parse(req.postData() || '{}') });
     if (fn === 'get_messages') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(page.messages) });
+    if (fn in page.replies) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(page.replies[fn]) });
     return route.fulfill({ status: 204, body: '' });
   });
   page = await ctx.newPage();
-  page.calls = calls; page.messages = [];
+  page.calls = calls; page.messages = []; page.replies = { get_route_updates: [] };
   const errors = [];
   page.on('console', m => m.type() === 'error' && errors.push(m.text()));
   page.on('pageerror', e => errors.push(e.message));
@@ -104,6 +106,32 @@ try {
     const n = page.calls.length;
     await page.evaluate(() => push.refresh());
     check('The push address is not re-sent when nothing changed', page.calls.filter((c, i) => i >= n && c.fn === 'save_push').length === 0);
+    await ctx.close();
+  }
+
+  // ------------------------------------------------------------------
+  // Route update published by race control: downloaded, shown, kept offline
+  {
+    const { ctx, page } = await newPage();
+    const base = JSON.parse(readFileSync('data/races/the-challenge.json', 'utf8'));
+    const v2 = { ...base, version: 2, stages: [{ ...base.stages[0], pts: base.stages[0].pts.slice(0, -100) }] };
+    const line = { ...JSON.parse(readFileSync('data/races/index.json', 'utf8')).find(r => r.id === 'the-challenge'), version: 2, distanceKm: 25 };
+    page.replies = { get_route_updates: [{ race_id: 'the-challenge', version: 2, summary: line }], get_route: v2 };
+    await page.goto(URL);
+    await page.waitForFunction(() => course && course.info && course.info.version === 2, null, { timeout: 15000 }).catch(() => {});
+    check('A route update from race control is downloaded and shown', (await text(page, '#raceChip')) === 'The Challenge · 25 km' &&
+      (await text(page, '#toast')).includes('Your route for The Challenge has been updated') && await page.evaluate(n => course.pts.length < n, base.stages[0].pts.length),
+      `${await text(page, '#raceChip')} | ${await text(page, '#toast')}`);
+    // Restart with no signal: the update is still there.
+    await page.evaluate(() => navigator.serviceWorker.ready);
+    await page.reload(); await page.waitForFunction(() => course && course.info);
+    page.replies.get_route_updates = [];
+    await ctx.setOffline(true);
+    await page.reload();
+    await page.waitForFunction(() => course && course.info, null, { timeout: 15000 }).catch(() => {});
+    check('The updated route stays on the phone with no signal', await page.evaluate(() => course && course.info.version === 2 && course.info.distanceKm === 25),
+      await page.evaluate(() => course && JSON.stringify({ v: course.info.version, km: course.info.distanceKm })));
+    await ctx.setOffline(false);
     await ctx.close();
   }
 

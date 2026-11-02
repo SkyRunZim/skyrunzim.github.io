@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Offline topo map with GPS for trail running in Nyanga, Zimbabwe",
   "scripts": {
-    "test": "node tests/app.test.mjs",
+    "test": "node tests/app.test.mjs && node tests/dashboard.test.mjs",
     "serve": "node tools/serve.mjs",
     "osm": "node tools/fetch-osm.mjs",
     "tiles": "node tools/render-tiles.mjs"

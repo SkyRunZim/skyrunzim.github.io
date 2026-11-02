@@ -2,7 +2,7 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
-const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
+const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.bin': 'application/octet-stream', '.css': 'text/css', '.json': 'application/json',
   '.geojson': 'application/json', '.webp': 'image/webp', '.png': 'image/png', '.gpx': 'application/gpx+xml' };
 const port = +process.argv[2] || 8080;
 createServer(async (req, res) => {

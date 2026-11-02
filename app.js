@@ -1,6 +1,6 @@
 // SkyRunZim: offline race map with live GPS, run recording and course.
 // Keep APP_VERSION in step with SHELL in sw.js.
-const APP_VERSION = 'v16 (2 Nov 2026)';
+const APP_VERSION = 'v17 (2 Nov 2026)';
 const TILE_CACHE = 'tiles-v2';
 // The maps the app can show. Each race says which map it uses ("map" in the
 // race list). Bump a map's tag when its pieces change, so phones download again.
@@ -813,6 +813,7 @@ const inbox = {
   async check(now = false) {
     if (!now && Date.now() - this.fetchedAt < 3 * 60e3) return;
     this.fetchedAt = Date.now();
+    routeUpdates.check(now);   // a route change usually comes with a message
     try {
       const res = await sync.rpc('get_messages', { p_race: profile.raceId || '' });
       this.list = await res.json(); this.save(); this.render(); this.popup();
@@ -918,30 +919,82 @@ $('pushYes').onclick = () => push.enable();
 $('pushNo').onclick = () => { pref('pushAsked', '1'); push.render(); };
 if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', e => { if (e.data === 'check-messages') inbox.check(true); });
 
-async function loadRaceList() {
-  if (races.length) return races;
+// Route updates from race control (the dashboard's Race settings tab). Any
+// newer version of a race than the one that shipped with the app is
+// downloaded when there is signal and kept on the phone, so it works offline.
+const ROUTE_CACHE = 'rc-config', routeKey = id => `route/${id}.json`;
+const routeUpdates = {
+  list: stored('routeUpdates', {}),     // race id -> its line in the race list, for downloaded updates
+  checkedAt: 0,
+  async check(now = false) {
+    if (!now && Date.now() - this.checkedAt < 3 * 60e3) return;
+    this.checkedAt = Date.now();
+    try {
+      const bundled = await loadBundledRaces();
+      const latest = await (await sync.rpc('get_route_updates', {})).json();
+      let mine = false;
+      for (const u of latest) {
+        const base = bundled.find(r => r.id === u.race_id), have = this.list[u.race_id];
+        if (!base || u.version <= Math.max(base.version, have ? have.version : 0)) continue;
+        const route = await (await sync.rpc('get_route', { p_race: u.race_id })).json();
+        if (!route || route.version !== u.version) continue;
+        await (await caches.open(ROUTE_CACHE)).put(routeKey(u.race_id), new Response(JSON.stringify(route)));
+        this.list[u.race_id] = { ...base, ...u.summary, file: base.file, fromRaceControl: true };
+        if (u.race_id === profile.raceId) mine = true;
+      }
+      pref('routeUpdates', JSON.stringify(this.list));
+      races = [];                                        // rebuild the race list with the updates
+      if (mine && profile.setupDone) await showRace(profile.raceId);   // shows "route has been updated"
+      if (mine) sync.soon();
+    } catch (err) { console.warn('[race control] route updates not checked', err.message || err); }
+  },
+  async route(id) {
+    try { const r = await (await caches.open(ROUTE_CACHE)).match(routeKey(id)); return r ? await r.json() : null; } catch { return null; }
+  },
+};
+
+let bundledRaces = null;
+async function loadBundledRaces() {
+  if (bundledRaces) return bundledRaces;
   const res = await fetch('data/races/index.json');
   if (!res.ok) throw new Error('race list not available (' + res.status + ')');
-  races = await res.json();
+  return (bundledRaces = await res.json());
+}
+// The race list: what shipped with the app, with any newer routes from race control.
+async function loadRaceList() {
+  if (races.length) return races;
+  races = (await loadBundledRaces()).map(r => {
+    const u = routeUpdates.list[r.id];
+    return u && u.version > r.version ? u : r;
+  });
   return races;
 }
 
 async function showRace(id) {
   $('raceChip').innerHTML = `${SPIN}Loading your race…`;
-  const info = (await loadRaceList()).find(r => r.id === id);
+  let info = (await loadRaceList()).find(r => r.id === id);
   if (!info) throw new Error('Your race is no longer in the app. Please choose your race again.');
   const mapChanged = setMap(info.map || 'nyanga');
-  const res = await fetch(info.file);
-  if (!res.ok) throw new Error('route not available (' + res.status + ')');
-  course = prepareCourse(await res.json());
+  let data = info.fromRaceControl ? await routeUpdates.route(id) : null;
+  if (info.fromRaceControl && !data) {
+    // The downloaded update has gone from the phone: use the route that shipped with the app.
+    delete routeUpdates.list[id]; pref('routeUpdates', JSON.stringify(routeUpdates.list));
+    races = []; info = (await loadRaceList()).find(r => r.id === id);
+  }
+  if (!data) {
+    const res = await fetch(info.file);
+    if (!res.ok) throw new Error('route not available (' + res.status + ')');
+    data = await res.json();
+  }
+  course = prepareCourse(data);
   course.info = info;
   // Progress along the route is remembered on the phone, so that after a
   // restart the app still knows which pass of a repeated stretch the runner is on.
   try { const p = JSON.parse(pref('progress')); lastAlong = p && p.race === id && p.version === info.version ? { s: p.s, along: p.along } : null; }
   catch { lastAlong = null; }
   drawCourse();
-  // Routes ship with the app, so an app update can carry a corrected route.
-  if (profile.raceVersion && profile.raceVersion !== info.version) toast(`Your ${info.name} route has been updated to the latest version.`, 6000);
+  // A corrected route comes with an app update or from race control.
+  if (profile.raceVersion && profile.raceVersion !== info.version) toast(`Your route for ${info.name} has been updated to the latest version.`, 6000);
   profile.raceVersion = info.version; saveProfile();
   renderRaceInfo();
   if (mapChanged) fitArea(L.latLngBounds(course.pts.map(p => [p[0], p[1]])));

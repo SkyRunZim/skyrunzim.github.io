@@ -176,6 +176,30 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
 .dot.off { background: #f5b960; box-shadow: 0 0 0 3px rgba(245,185,96,.25); }
 .who { font-size: 13px; opacity: .85; }
 .msg .meta .btn { float: right; padding: 2px 8px; font-size: 12px; margin-left: 8px; }
+/* Race settings */
+.racegrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.racecard { border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 8px; align-content: start; }
+.racecard h3 { font-size: 20px; }
+.racecard .facts { font-size: 13px; color: var(--fg-2); }
+.drop { border: 2px dashed var(--line); border-radius: 10px; padding: 14px; text-align: center; font-size: 13px; color: var(--fg-3); cursor: pointer; }
+.drop.over { border-color: var(--sun); background: var(--warn-bg); color: var(--fg); }
+.drop input { display: none; }
+.hist { font-size: 12px; color: var(--fg-3); display: grid; gap: 4px; }
+.hist div { display: flex; gap: 6px; align-items: center; justify-content: space-between; }
+.hist .btn { padding: 2px 8px; font-size: 12px; }
+.modal { position: fixed; inset: 0; background: rgba(10,18,35,.55); z-index: 20; display: grid; place-items: center; padding: 16px; }
+.modalbox { width: min(1100px, 100%); max-height: calc(100vh - 32px); overflow: auto; }
+.rmgrid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; }
+.rmmap { height: 480px; border-radius: 10px; border: 1px solid var(--line); }
+.cmp { min-width: 0; font-size: 14px; }
+.cmp td, .cmp th { padding: 6px 8px; white-space: normal; }
+.modalbox label { display: grid; gap: 4px; font-size: 14px; }
+.modalbox input:not([type]), .modalbox textarea { border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 8px 10px; }
+.modalbox textarea { min-height: 70px; resize: vertical; }
+.tickrow { display: flex !important; align-items: center; gap: 8px; }
+.warnline { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.badline { background: var(--bad-bg); color: var(--bad); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-weight: 600; }
+@media (max-width: 900px) { .rmgrid { grid-template-columns: minmax(0, 1fr); } .rmmap { height: 320px; } }
 .warnbar { background: var(--warn-bg); color: var(--warn); padding: 10px 14px; border-radius: 10px; font-weight: 600; }
 .tabs[hidden], .sync[hidden], [hidden] { display: none !important; }
 </style>
@@ -196,6 +220,7 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
       <button class="tab" role="tab" aria-selected="true" data-view="overview">Overview</button>
       <button class="tab" role="tab" aria-selected="false" data-view="runners">Runners</button>
       <button class="tab" role="tab" aria-selected="false" data-view="messages">Messages to runners</button>
+      <button class="tab" role="tab" aria-selected="false" data-view="races">Race settings</button>
     </nav>
   </div>
 </header>
@@ -265,9 +290,34 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
       <div style="display:grid;gap:10px;align-content:start" id="msgList"></div>
     </div>
   </section>
+  <section class="view panel" id="view-races" hidden>
+    <div class="head"><div><h2>Race settings</h2><div class="sub">To change a route, drop the corrected GPX file on its race. You see a preview first; runners get it only when you publish.</div></div></div>
+    <div class="notice warnbar" style="margin-bottom:12px">Avoid changing a route once the race has started: each phone has to find its runner on the new route again, which can go wrong on stretches that are run twice.</div>
+    <div class="racegrid" id="raceGrid"><p class="notice">Loading races…</p></div>
+  </section>
 </main>
+<div class="modal" id="routeModal" hidden>
+  <div class="panel modalbox" role="dialog" aria-labelledby="rmTitle">
+    <div class="head"><div><h2 id="rmTitle">Route update</h2><div class="sub" id="rmSub"></div></div><button class="btn" id="rmClose">Cancel</button></div>
+    <div class="rmgrid">
+      <div id="rmMap" class="rmmap"></div>
+      <div style="display:grid;gap:12px;align-content:start">
+        <div class="legend"><span><i class="sw" style="background:#9aa5b8"></i>Current route</span><span><i class="sw" style="background:#f7981c"></i>New route</span><span><i class="sw" style="background:#184898;border-radius:50%"></i>Checkpoint</span></div>
+        <table class="cmp" id="rmTable"></table>
+        <div id="rmWarn"></div>
+        <label><b>Note for the record</b> (optional)<input id="rmNote" placeholder="e.g. Water point 6 moved after the river crossing"></label>
+        <label class="tickrow"><input type="checkbox" id="rmNotify" checked> Tell this race’s runners (message and phone notification)</label>
+        <textarea id="rmMsg" maxlength="600"></textarea>
+        <button class="btn primary" id="rmPublish">Publish to runners’ phones</button>
+        <div class="notice" id="rmNoteOut"></div>
+      </div>
+    </div>
+  </div>
+</div>
 <div id="tip"></div>
 <div class="toast" id="toast"></div>
+<link rel="stylesheet" href="../vendor/leaflet.css">
+<script src="../vendor/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
 <script>
 // Race control, live. Runners' phones send their readiness (never their
@@ -534,6 +584,167 @@ $('msgList').addEventListener('click', async e => {
   if (error) toast('Not deleted: ' + error.message); else loadMsgs();
 });
 
+// ---- Race settings: route updates ----
+// A dropped GPX file is built into a route right here, by the same code that
+// builds the routes shipped with the app (route-build.mjs), previewed against
+// the current route, and published to race_routes. Phones download it when
+// they next have signal. Every version is kept, so any can be restored.
+const MAPS = {   // as in the app (app.js MAPS)
+  nyanga: { bbox: [[-18.523914235060392, 32.69659612566003], [-18.215629827297686, 32.992700072259964]],
+    layers: [{ url: '../tiles-turaco26/{z}/{x}/{y}.webp', minNativeZoom: 11, maxNativeZoom: 16 }] },
+  harare: { bbox: [[-18.0763, 30.8219], [-17.5337, 31.3881]],
+    layers: [{ url: '../tiles-harare/{z}/{x}/{y}.webp', minNativeZoom: 11, maxNativeZoom: 15 },
+      { url: '../tiles-harare/{z}/{x}/{y}.webp', minZoom: 16, minNativeZoom: 16, maxNativeZoom: 16, bounds: [[-17.9407, 30.9635], [-17.6693, 31.2465]] }] },
+};
+let raceMeta = [], published = [], builder = null, heights;
+const lib = () => (builder ||= import('./route-build.mjs'));
+async function loadRoutes() {
+  if (!raceMeta.length) { try { raceMeta = await (await fetch('../races/races.json')).json(); } catch { raceMeta = []; } }
+  const { data, error } = await db.from('race_routes').select('id, race_id, version, summary, file_name, note, published_at, author').order('version', { ascending: false });
+  if (error) { $('raceGrid').innerHTML = `<p class="notice">Route updates are not set up yet (${esc(error.message)}). Run the latest supabase/schema.sql.</p>`; return; }
+  published = data;
+  renderRaces();
+}
+const latestOf = id => published.find(p => p.race_id === id);
+const currentOf = id => { const p = latestOf(id), b = RACES.find(r => r.id === id); return p && (!b || p.version > b.version) ? p.summary : b; };
+const when = t => new Date(t).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+function renderRaces() {
+  $('raceGrid').innerHTML = raceMeta.map(m => {
+    const cur = currentOf(m.id) || {}, p = latestOf(m.id), hist = published.filter(x => x.race_id === m.id);
+    const built = RACES.find(r => r.id === m.id);
+    return `<div class="racecard" data-race="${esc(m.id)}">
+      <h3>${esc(m.name)}</h3>
+      <div class="facts">Version ${cur.version} · ${cur.distanceKm} km · ${cur.climbM} m climb · ${cur.checkpoints} checkpoints${m.stages ? ` · ${m.stages.length} days` : ''}<br>
+        ${p && cur === p.summary ? `Updated ${esc(when(p.published_at))}${p.author ? ' by ' + esc(p.author) : ''}${p.file_name ? ' from ' + esc(p.file_name) : ''}` : 'The route that shipped with the app'}</div>
+      <label class="drop">Drop the corrected GPX file here, or tap to choose it<input type="file" accept=".gpx,application/gpx+xml"></label>
+      ${hist.length ? `<div class="hist"><b>Earlier versions</b>${hist.slice(cur === (p && p.summary) ? 1 : 0).map(h => `<div><span>v${h.version} · ${esc(when(h.published_at))} · ${h.summary.distanceKm} km${h.note ? ' · ' + esc(h.note) : ''}</span>
+        <button class="btn" data-restore="${h.id}">Restore</button></div>`).join('')}
+        ${built ? `<div><span>v${built.version} · shipped with the app · ${built.distanceKm} km</span>${cur === built ? '' : `<button class="btn" data-original="${esc(m.id)}">Restore</button>`}</div>` : ''}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+// Drag and drop, or choose a file.
+$('raceGrid').addEventListener('dragover', e => { const d = e.target.closest('.drop'); if (d) { e.preventDefault(); d.classList.add('over'); } });
+$('raceGrid').addEventListener('dragleave', e => { const d = e.target.closest('.drop'); if (d) d.classList.remove('over'); });
+$('raceGrid').addEventListener('drop', e => {
+  const d = e.target.closest('.drop'); if (!d) return;
+  e.preventDefault(); d.classList.remove('over');
+  if (e.dataTransfer.files[0]) fromFile(d.closest('.racecard').dataset.race, e.dataTransfer.files[0]);
+});
+$('raceGrid').addEventListener('change', e => { if (e.target.type === 'file' && e.target.files[0]) fromFile(e.target.closest('.racecard').dataset.race, e.target.files[0]); e.target.value = ''; });
+$('raceGrid').addEventListener('click', async e => {
+  const r = e.target.closest('[data-restore]'), o = e.target.closest('[data-original]');
+  try {
+    if (r) {
+      const { data, error } = await db.from('race_routes').select('race_id, version, route, summary, gpx, file_name').eq('id', +r.dataset.restore).single();
+      if (error) throw error;
+      preview(data.race_id, { route: data.route, summary: data.summary, gpx: data.gpx, fileName: data.file_name, note: `Restored version ${data.version}` });
+    }
+    if (o) {
+      const id = o.dataset.original, m = raceMeta.find(x => x.id === id), b = RACES.find(x => x.id === id);
+      const [route, gpx] = await Promise.all([fetch('../' + b.file).then(x => x.json()), fetch('../races/' + m.file).then(x => x.text())]);
+      preview(id, { route, summary: { ...b }, gpx, fileName: m.file, note: `Restored the route that shipped with the app (v${b.version})` });
+    }
+  } catch (err) { toast('Could not load that version: ' + (err.message || err)); }
+});
+
+async function fromFile(id, file) {
+  const m = raceMeta.find(x => x.id === id);
+  try {
+    const xml = await file.text();
+    if (!/<gpx[\s>]/i.test(xml)) throw new Error(`${file.name} is not a GPX file`);
+    const { addCheckpoints, buildRace, heightLookup } = await lib();
+    // Heights for files without them (Nyanga race map area only).
+    if (heights === undefined) {
+      try {
+        const [grid, bin] = await Promise.all([fetch('nyanga-heights.json').then(r => r.json()), fetch('nyanga-heights.bin').then(r => r.arrayBuffer())]);
+        heights = heightLookup(grid, new Float32Array(bin));
+      } catch { heights = null; }
+    }
+    // Checkpoints are shared between races: gather every race's current file, with this new one in its place.
+    const { data: files } = await db.from('race_routes').select('race_id, version, gpx').order('version', { ascending: false });
+    const pool = [];
+    for (const r of raceMeta) {
+      const latest = (files || []).find(f => f.race_id === r.id && f.gpx && f.version > (RACES.find(b => b.id === r.id) || { version: 0 }).version);
+      const text = r.id === id ? xml : latest ? latest.gpx : await fetch('../races/' + r.file).then(x => x.text());
+      addCheckpoints(pool, text, r.id);
+    }
+    const built = buildRace({ ...m, version: 0 }, xml, pool, heights || undefined);
+    preview(id, { route: built.route, summary: built.summary, gpx: xml, fileName: file.name, heightsMissing: built.heightsMissing });
+  } catch (err) { alert(`${m.name}: ${err.message || err}`); }
+}
+
+// The preview: current and new route on the race map, with what changes.
+let pending = null, rmMap = null;
+async function preview(id, cand) {
+  const m = raceMeta.find(x => x.id === id), cur = currentOf(id), b = RACES.find(x => x.id === id);
+  const version = Math.max(b ? b.version : 0, ...published.filter(p => p.race_id === id).map(p => p.version)) + 1;
+  cand.route = { ...cand.route, version }; cand.summary = { ...cand.summary, version };
+  pending = { id, ...cand };
+  $('rmTitle').textContent = `${m.name}: new route (version ${version})`;
+  $('rmSub').textContent = cand.fileName ? `From ${cand.fileName}` : '';
+  $('rmNote').value = cand.note || '';
+  $('rmMsg').value = `The route for ${m.name} has been updated. Open SkyRunZim with signal so it downloads before the race.`;
+  $('rmNotify').checked = true; $('rmMsg').hidden = false; $('rmNoteOut').textContent = ''; $('rmPublish').disabled = false;
+  const row = (label, a, b, unit = '') => `<tr><td>${label}</td><td>${a ?? '–'}${unit}</td><td><b>${b ?? '–'}${unit}</b></td><td>${typeof a === 'number' && typeof b === 'number' && a !== b ? (b > a ? '+' : '') + (+(b - a).toFixed(1)) + unit : ''}</td></tr>`;
+  const s = cand.summary;
+  $('rmTable').innerHTML = `<tr><th></th><th>Now</th><th>New</th><th>Change</th></tr>` + row('Distance', cur.distanceKm, s.distanceKm, ' km') + row('Climb', cur.climbM, s.climbM, ' m') +
+    row('Checkpoints', cur.checkpoints, s.checkpoints) + (s.stages ? s.stages.map((st, i) => row(st.short || st.name, cur.stages && cur.stages[i] && cur.stages[i].distanceKm, st.distanceKm, ' km')).join('') : '');
+  // Draw both routes.
+  $('routeModal').hidden = false;
+  const mapDef = MAPS[s.map || 'nyanga'] || MAPS.nyanga;
+  if (rmMap) rmMap.remove();
+  rmMap = L.map('rmMap', { maxBounds: L.latLngBounds(mapDef.bbox).pad(0.3) });
+  mapDef.layers.forEach(l => L.tileLayer(l.url, { minNativeZoom: l.minNativeZoom, maxNativeZoom: l.maxNativeZoom, minZoom: l.minZoom || 9, maxZoom: 18, bounds: l.bounds || mapDef.bbox }).addTo(rmMap));
+  let oldRoute = null;
+  try { oldRoute = cur === b ? await fetch('../' + b.file).then(r => r.json()) : (await db.from('race_routes').select('route').eq('race_id', id).eq('version', cur.version).single()).data.route; } catch {}
+  const lines = r => r.stages.map(st => st.pts.map(p => [p[0], p[1]]));
+  if (oldRoute) L.polyline(lines(oldRoute), { color: '#9aa5b8', weight: 7, opacity: 0.9 }).addTo(rmMap);
+  const nw = L.polyline(lines(cand.route), { color: '#f7981c', weight: 3.5 }).addTo(rmMap);
+  cand.route.wpts.forEach(w => L.circleMarker([w.lat, w.lon], { radius: 5, color: '#fff', weight: 1.5, fillColor: '#184898', fillOpacity: 1 }).bindTooltip(w.name).addTo(rmMap));
+  const starts = lines(cand.route).map(l => l[0]);
+  starts.forEach((p, i) => L.circleMarker(p, { radius: 8, color: '#fff', weight: 2, fillColor: '#1d7a4a', fillOpacity: 1 }).bindTooltip(starts.length > 1 ? `Start, day ${i + 1}` : 'Start').addTo(rmMap));
+  rmMap.fitBounds(nw.getBounds().pad(0.08));
+  // Things worth a second look before publishing.
+  const warn = [];
+  if (cand.heightsMissing) warn.push('Some of this route has no heights (outside the Nyanga height data), so the climb figure is too low.');
+  if (cur.distanceKm && Math.abs(s.distanceKm - cur.distanceKm) / cur.distanceKm > 0.15) warn.push(`The distance changes by more than 15% (${cur.distanceKm} → ${s.distanceKm} km). Check this is the right race’s file.`);
+  if (oldRoute) {
+    const { metres } = await lib();
+    const a = oldRoute.stages[0].pts[0], z = cand.route.stages[0].pts[0];
+    const moved = metres(a, z);
+    if (moved > 300) warn.push(`The start has moved ${moved >= 1000 ? (moved / 1000).toFixed(1) + ' km' : Math.round(moved) + ' m'}. Check the route runs the right way.`);
+  }
+  if (!cand.route.wpts.length && cur.checkpoints) warn.push('The new route has no checkpoints, but the current one has ' + cur.checkpoints + '.');
+  $('rmWarn').innerHTML = warn.map(w => `<div class="warnline">⚠ ${esc(w)}</div>`).join('');
+  setTimeout(() => rmMap.invalidateSize(), 50);
+}
+$('rmClose').addEventListener('click', () => { $('routeModal').hidden = true; pending = null; });
+$('rmNotify').addEventListener('change', () => { $('rmMsg').hidden = !$('rmNotify').checked; });
+$('rmPublish').addEventListener('click', async () => {
+  if (!pending) return;
+  const p = pending, name = raceMeta.find(x => x.id === p.id).name;
+  if (!confirm(`Publish version ${p.summary.version} of ${name} to runners’ phones?`)) return;
+  $('rmPublish').disabled = true; $('rmNoteOut').textContent = 'Publishing…';
+  const { error } = await db.from('race_routes').insert({ race_id: p.id, version: p.summary.version, route: p.route, summary: p.summary,
+    gpx: p.gpx || null, file_name: p.fileName || null, note: $('rmNote').value.trim() || null });
+  if (error) { $('rmPublish').disabled = false; $('rmNoteOut').textContent = 'Not published: ' + error.message; return; }
+  let told = '';
+  const body = $('rmMsg').value.trim();
+  if ($('rmNotify').checked && body) {
+    const { data: msg, error: mErr } = await db.from('messages').insert({ body, race_id: p.id }).select('id').single();
+    if (mErr) told = ` The message was not sent (${mErr.message}).`;
+    else {
+      const { data: pushed, error: pErr } = await db.functions.invoke('send-push', { body: { message_id: msg.id } });
+      told = pErr ? ' Runners see the message when they open the app (notifications did not go out).' : ` ${pushed.sent} phone${pushed.sent === 1 ? '' : 's'} notified now.`;
+    }
+    loadMsgs();
+  }
+  $('routeModal').hidden = true; pending = null;
+  toast(`${name} version ${p.summary.version} published. Phones download it when they next have signal.${told}`);
+  loadRoutes();
+});
+
 // ---- Live data ----
 let channel = null, lastLoad = null, live = false;
 function renderSync() {
@@ -575,6 +786,7 @@ async function signedIn(session) {
   fillTo();
   await loadAll();
   loadMsgs();
+  loadRoutes();
   goLive();
 }
 $('loginForm').addEventListener('submit', async e => {
