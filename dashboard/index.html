@@ -176,6 +176,21 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
 .dot.off { background: #f5b960; box-shadow: 0 0 0 3px rgba(245,185,96,.25); }
 .who { font-size: 13px; opacity: .85; }
 .msg .meta .btn { float: right; padding: 2px 8px; font-size: 12px; margin-left: 8px; }
+/* Course map */
+.cmgrid { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; background: var(--surface); }
+.cmgrid:fullscreen { padding: 14px; grid-template-rows: 100%; }
+.cmgrid:fullscreen .cmmap { height: 100%; }
+.cmside { display: grid; gap: 12px; align-content: start; }
+.cmmap { height: 640px; border-radius: 10px; border: 1px solid var(--line); }
+.cmrace { display: grid; grid-template-columns: auto 14px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 7px 8px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+.cmrace:hover { background: var(--bg); }
+.cmrace i { width: 14px; height: 5px; border-radius: 3px; }
+.cmrace small { display: block; color: var(--fg-3); font-size: 12px; }
+.cmrace .btn { padding: 3px 8px; font-size: 12px; text-decoration: none; }
+.cmopts { display: grid; gap: 6px; font-size: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+.kmlbl { background: #fff; border: 2px solid; border-radius: 9px; font: 700 11px/14px var(--body); padding: 0 4px; white-space: nowrap; text-align: center; color: #172036; }
+.leaflet-popup-content { font: 14px/1.4 var(--body); }
+@media (max-width: 900px) { .cmgrid { grid-template-columns: minmax(0, 1fr); } .cmmap { height: 460px; } }
 /* Race settings */
 .racegrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
 .racecard { border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 8px; align-content: start; }
@@ -224,6 +239,7 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
       <button class="tab" role="tab" aria-selected="true" data-view="overview">Overview</button>
       <button class="tab" role="tab" aria-selected="false" data-view="runners">Runners</button>
       <button class="tab" role="tab" aria-selected="false" data-view="messages">Messages to runners</button>
+      <button class="tab" role="tab" aria-selected="false" data-view="course">Course map</button>
       <button class="tab" role="tab" aria-selected="false" data-view="races">Race settings</button>
     </nav>
   </div>
@@ -292,6 +308,22 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
         <div class="notice">Runners cannot reply in the app. For anything urgent, also use WhatsApp or a phone call.</div>
       </form>
       <div style="display:grid;gap:10px;align-content:start" id="msgList"></div>
+    </div>
+  </section>
+  <section class="view panel" id="view-course" hidden>
+    <div class="head"><div><h2>Course map</h2><div class="sub">Every race on the official map, as runners have it now. Tick races to show them; tap a route for the distance and height at that point.</div></div>
+      <div class="chips"><button class="chip" data-cmap="nyanga" aria-pressed="true">Nyanga race map</button><button class="chip" data-cmap="harare" aria-pressed="false">Harare practice map</button></div></div>
+    <div class="cmgrid" id="cmGrid">
+      <div class="cmside">
+        <div id="cmRaces"><p class="notice">Loading races…</p></div>
+        <div class="cmopts">
+          <label class="tickrow"><input type="checkbox" id="cmCps" checked> Checkpoints</label>
+          <label class="tickrow"><input type="checkbox" id="cmKm"> Distance markers every 5 km</label>
+        </div>
+        <div class="acts" style="justify-content:flex-start"><button class="btn" id="cmAll">Show all</button><button class="btn" id="cmNone">Hide all</button><button class="btn" id="cmFull">Full screen</button></div>
+        <div class="notice">To change a route: download its GPX here, edit it (e.g. in Garmin BaseCamp or gpx.studio), then drop it in Race settings.</div>
+      </div>
+      <div id="cmMap" class="cmmap"></div>
     </div>
   </section>
   <section class="view panel" id="view-races" hidden>
@@ -525,6 +557,7 @@ function show(v) {
   document.querySelectorAll('.tab').forEach(t => t.setAttribute('aria-selected', t.dataset.view === v));
   document.querySelectorAll('.view').forEach(s => (s.hidden = s.id !== 'view-' + v));
   if (v === 'overview') drawChart();
+  if (v === 'course') courseMap.open();
 }
 document.querySelector('.tabs').addEventListener('click', e => { const t = e.target.closest('.tab'); if (t) show(t.dataset.view); });
 
@@ -608,6 +641,8 @@ async function loadRoutes() {
   if (error) { $('raceGrid').innerHTML = `<p class="notice">Route updates are not set up yet (${esc(error.message)}). Run the latest supabase/schema.sql.</p>`; return; }
   published = data;
   renderRaces();
+  courseMap.stale = true;   // routes may have changed: the course map reloads them when next opened
+  if (courseMap.map && !$('view-course').hidden) courseMap.open();
 }
 const latestOf = id => published.find(p => p.race_id === id);
 const currentOf = id => { const p = latestOf(id), b = RACES.find(r => r.id === id); return p && (!b || p.version > b.version) ? p.summary : b; };
@@ -776,6 +811,131 @@ $('rmPublish').addEventListener('click', async () => {
   toast(`${name} version ${p.summary.version} published. Phones download it when they next have signal.${told}`);
   loadRoutes();
 });
+
+// ---- Course map: every race on the official map, each can be shown or hidden ----
+// In races.json order: Challenge, Mutarazi, Ultra, Back2Back, Epic, GOAT, Harare Prep.
+const ROUTE_COLOURS = ['#d62728', '#1f5fd6', '#ff7f0e', '#8e24aa', '#00897b', '#212121', '#6d4c41', '#c2185b'];
+const courseMap = {
+  map: null, mapId: 'nyanga', routes: {}, shown: null, layers: L.layerGroup(), base: [],
+  colour: id => ROUTE_COLOURS[Math.max(0, raceMeta.findIndex(m => m.id === id)) % ROUTE_COLOURS.length],
+  races() { return raceMeta.filter(m => (m.map || 'nyanga') === this.mapId); },
+  // The route runners have now: the latest published update, else the one that shipped with the app.
+  async route(id) {
+    if (this.routes[id]) return this.routes[id];
+    const cur = currentOf(id), b = RACES.find(x => x.id === id);
+    let r;
+    if (cur !== b) r = (await db.from('race_routes').select('route').eq('race_id', id).eq('version', cur.version).single()).data.route;
+    else r = await fetch('../' + b.file).then(x => x.json());
+    // Distance along each stage, for "km 23.4" when a route is tapped.
+    const { metres } = await lib();
+    r.stages.forEach(st => { let d = 0; st.along = st.pts.map((p, i) => (d += i ? metres(st.pts[i - 1], p) : 0)); });
+    return (this.routes[id] = r);
+  },
+  async open() {
+    if (!raceMeta.length) await loadRoutes();
+    if (!this.map) {
+      this.map = L.map('cmMap', { zoomSnap: 0.5 });
+      this.layers.addTo(this.map);
+      this.setMap(this.mapId);
+    }
+    setTimeout(() => this.map.invalidateSize(), 50);
+    if (this.stale) { this.stale = false; this.routes = {}; }
+    this.renderList();
+    await this.draw();
+  },
+  setMap(id) {
+    this.mapId = id; this.shown = null;
+    const def = MAPS[id];
+    this.base.forEach(l => l.remove());
+    this.base = def.layers.map(l => L.tileLayer(l.url, { minNativeZoom: l.minNativeZoom, maxNativeZoom: l.maxNativeZoom, minZoom: l.minZoom || 9, maxZoom: 18,
+      bounds: l.bounds || def.bbox, attribution: id === 'nyanga' ? 'Race map © Far and Wide' : '© OpenStreetMap contributors' }).addTo(this.map));
+    this.map.setMaxBounds(L.latLngBounds(def.bbox).pad(0.3));
+    this.map.fitBounds(def.bbox);
+    document.querySelectorAll('[data-cmap]').forEach(b => b.setAttribute('aria-pressed', b.dataset.cmap === id));
+  },
+  renderList() {
+    const list = this.races();
+    if (!this.shown) this.shown = new Set(list.map(m => m.id));
+    $('cmRaces').innerHTML = list.map(m => {
+      const c = currentOf(m.id) || {};
+      return `<label class="cmrace"><input type="checkbox" data-cm="${esc(m.id)}"${this.shown.has(m.id) ? ' checked' : ''}><i style="background:${this.colour(m.id)}"></i>
+        <span><b>${esc(m.name)}</b><small>${c.distanceKm} km · ${c.climbM} m climb · ${c.checkpoints} checkpoints · v${c.version}</small></span>
+        <button class="btn" data-gpx="${esc(m.id)}" title="Download this route as a GPX file">GPX</button></label>`;
+    }).join('') || '<p class="notice">No races on this map.</p>';
+  },
+  async draw() {
+    const kmOn = $('cmKm').checked, cpOn = $('cmCps').checked;
+    const shown = this.races().filter(m => this.shown.has(m.id));
+    const routes = await Promise.all(shown.map(m => this.route(m.id).catch(() => null)));
+    this.layers.clearLayers(); this.lines = {};
+    const cps = new Map();
+    // Longest first, so the shorter races (sharing the same trails) are drawn on top and stay visible.
+    const order = shown.map((m, k) => ({ m, r: routes[k] })).filter(x => x.r)
+      .sort((a, b) => (currentOf(b.m.id).distanceKm || 0) - (currentOf(a.m.id).distanceKm || 0));
+    order.forEach(({ m, r }) => {
+      const colour = this.colour(m.id);
+      this.lines[m.id] = [];
+      r.stages.forEach((st, s) => {
+        const line = st.pts.map(p => [p[0], p[1]]);
+        this.lines[m.id].push(L.polyline(line, { color: '#fff', weight: 7, opacity: 0.8, interactive: false }).addTo(this.layers));
+        this.lines[m.id].push(L.polyline(line, { color: colour, weight: 4 }).on('click', e => this.tapped(e, m, st)).addTo(this.layers));
+        const day = r.stages.length > 1 ? ` (${st.short || 'day ' + (s + 1)})` : '';
+        L.circleMarker(line[0], { radius: 7, color: '#fff', weight: 2, fillColor: '#1d7a4a', fillOpacity: 1 }).bindTooltip(`Start: ${esc(m.name)}${esc(day)}`).addTo(this.layers);
+        L.circleMarker(line[line.length - 1], { radius: 7, color: '#fff', weight: 2, fillColor: '#172036', fillOpacity: 1 }).bindTooltip(`Finish: ${esc(m.name)}${esc(day)}`).addTo(this.layers);
+        if (kmOn) for (let km = 5; km * 1000 < st.along[st.along.length - 1]; km += 5) {
+          const i = st.along.findIndex(d => d >= km * 1000);
+          L.marker(line[i], { icon: L.divIcon({ className: '', html: `<div class="kmlbl" style="border-color:${colour}">${km}</div>`, iconSize: [26, 18], iconAnchor: [13, 9] }), interactive: false }).addTo(this.layers);
+        }
+      });
+      // Checkpoints shared by several races are marked once, listing the races.
+      r.wpts.forEach(w => { const key = `${w.lat},${w.lon}`; if (!cps.has(key)) cps.set(key, { ...w, races: [] }); cps.get(key).races.push(m.name); });
+    });
+    if (cpOn) cps.forEach(w => L.circleMarker([w.lat, w.lon], { radius: 5.5, color: '#fff', weight: 1.5, fillColor: w.kind === 'water' ? '#1f88e5' : w.kind === 'station' ? '#6a1b9a' : '#455a64', fillOpacity: 1 })
+      .bindTooltip(`<b>${esc(w.name)}</b><br>${esc(w.races.join(', '))}`).addTo(this.layers));
+    // The first time each map is shown, zoom to the courses rather than the whole map sheet.
+    const all = Object.values(this.lines).flat();
+    if (all.length && this.fitted !== this.mapId) { this.fitted = this.mapId; this.map.fitBounds(L.featureGroup(all).getBounds().pad(0.05)); }
+  },
+  // Pointing at a race in the list brings it to the front and fades the others.
+  highlight(id) {
+    Object.entries(this.lines || {}).forEach(([rid, ls]) => ls.forEach((l, i) => {
+      const on = !id || rid === id;
+      l.setStyle(i % 2 ? { opacity: on ? 1 : 0.18, weight: rid === id ? 6 : 4 } : { opacity: on ? 0.8 : 0 });
+      if (rid === id) l.bringToFront();
+    }));
+  },
+  // Which race, how far along and how high, where a route was tapped.
+  tapped(e, m, st) {
+    let best = 0, bd = Infinity;
+    st.pts.forEach((p, i) => { const d = (p[0] - e.latlng.lat) ** 2 + ((p[1] - e.latlng.lng) * Math.cos(p[0] * Math.PI / 180)) ** 2; if (d < bd) { bd = d; best = i; } });
+    const p = st.pts[best], total = st.along[st.along.length - 1];
+    L.popup().setLatLng([p[0], p[1]]).setContent(`<b style="color:${this.colour(m.id)}">${esc(m.name)}</b>${st.short ? ' · ' + esc(st.short) : ''}<br>
+      km ${(st.along[best] / 1000).toFixed(1)} of ${(total / 1000).toFixed(1)}${p[2] != null ? ` · ${p[2]} m high` : ''}<br><small>${p[0].toFixed(5)}, ${p[1].toFixed(5)}</small>`).openOn(this.map);
+  },
+  // The current route as a GPX file: the published one, else the shipped one.
+  async gpx(id) {
+    const m = raceMeta.find(x => x.id === id), cur = currentOf(id), b = RACES.find(x => x.id === id);
+    let text, name = m.file;
+    if (cur !== b) {
+      const { data } = await db.from('race_routes').select('gpx').eq('race_id', id).eq('version', cur.version).single();
+      text = data && data.gpx; name = `${id}-v${cur.version}.gpx`;
+    }
+    if (!text) text = await fetch('../races/' + m.file).then(x => x.text());
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([text], { type: 'application/gpx+xml' })), download: name });
+    document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  },
+};
+$('cmRaces').addEventListener('change', e => { const id = e.target.dataset.cm; if (!id) return; e.target.checked ? courseMap.shown.add(id) : courseMap.shown.delete(id); courseMap.draw(); });
+$('cmRaces').addEventListener('click', e => { const b = e.target.closest('[data-gpx]'); if (b) { e.preventDefault(); courseMap.gpx(b.dataset.gpx).catch(err => toast('Could not download: ' + err.message)); } });
+$('cmRaces').addEventListener('mouseover', e => { const row = e.target.closest('.cmrace'); if (row) courseMap.highlight(row.querySelector('[data-cm]').dataset.cm); });
+$('cmRaces').addEventListener('mouseleave', () => courseMap.highlight(null));
+$('cmCps').addEventListener('change', () => courseMap.draw());
+$('cmKm').addEventListener('change', () => courseMap.draw());
+$('cmAll').addEventListener('click', () => { courseMap.shown = new Set(courseMap.races().map(m => m.id)); courseMap.renderList(); courseMap.draw(); });
+$('cmNone').addEventListener('click', () => { courseMap.shown = new Set(); courseMap.renderList(); courseMap.draw(); });
+$('cmFull').addEventListener('click', () => (document.fullscreenElement ? document.exitFullscreen() : $('cmGrid').requestFullscreen()).catch(() => {}));
+document.addEventListener('fullscreenchange', () => { $('cmFull').textContent = document.fullscreenElement ? 'Exit full screen' : 'Full screen'; if (courseMap.map) setTimeout(() => courseMap.map.invalidateSize(), 100); });
+document.querySelectorAll('[data-cmap]').forEach(b => b.addEventListener('click', () => { courseMap.setMap(b.dataset.cmap); courseMap.renderList(); courseMap.draw(); }));
 
 // ---- Live data ----
 let channel = null, lastLoad = null, live = false;

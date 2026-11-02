@@ -111,6 +111,35 @@ try {
   check('The GOAT previews as no change', /Distance\s+114.9 km\s+114.9 km\s*\n/.test(await page.locator('#rmTable').innerText()));
   check('The GOAT\'s file is kept compact', await page.evaluate(() => pending.gpx.length < 1.5e6), await page.evaluate(() => `${(pending.gpx.length / 1e6).toFixed(2)} MB`));
   await page.click('#rmClose');
+  // ------------------------------------------------------------------
+  // Course map: every race on the official map, shown or hidden at will.
+  await page.evaluate(() => show('course'));
+  await page.waitForFunction(() => document.querySelectorAll('#cmMap path.leaflet-interactive').length >= 6, null, { timeout: 15000 }).catch(() => {});
+  const lines = () => page.evaluate(() => [...document.querySelectorAll('#cmMap path.leaflet-interactive')].filter(p => p.getAttribute('stroke-width') === '4').length);
+  check('Course map lists the six Nyanga races', await page.locator('#cmRaces .cmrace').count() === 6);
+  check('Course map draws every race (Back2Back as its two days)', await lines() === 7, `${await lines()} route lines`);
+  check('Shared checkpoints are marked once', await page.evaluate(() => {
+    const dots = [...document.querySelectorAll('#cmMap path.leaflet-interactive')].filter(p => p.getAttribute('stroke-width') === '1.5');
+    return dots.length > 20 && new Set(dots.map(d => d.getAttribute('d'))).size === dots.length;
+  }));
+  await page.uncheck('[data-cm="the-goat"]');
+  await page.waitForTimeout(300);
+  check('Unticking a race hides it', await lines() === 6);
+  await page.check('#cmKm'); await page.waitForTimeout(300);
+  check('Distance markers every 5 km', await page.locator('.kmlbl').count() > 30, `${await page.locator('.kmlbl').count()} markers`);
+  await page.click('#cmNone'); await page.waitForTimeout(200);
+  await page.check('[data-cm="the-challenge"]'); await page.waitForTimeout(400);
+  // Tap the Challenge route: which race, how far along, how high.
+  const at = await page.evaluate(() => { const r = courseMap.routes['the-challenge'].stages[0].pts[250]; const pt = courseMap.map.latLngToContainerPoint([r[0], r[1]]); return { x: pt.x, y: pt.y }; });
+  const box = await page.locator('#cmMap').boundingBox();
+  await page.mouse.click(box.x + at.x, box.y + at.y);
+  await page.waitForSelector('.leaflet-popup-content', { timeout: 3000 }).catch(() => {});
+  const pop = await page.locator('.leaflet-popup-content').innerText().catch(() => '');
+  check('Tapping a route says which race, how far along and how high', pop.includes('The Challenge') && /km \d+\.\d of 28\.\d/.test(pop) && / m high/.test(pop), pop.replace(/\n/g, ' | '));
+  const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 5000 }).catch(() => null), page.click('[data-gpx="the-challenge"]')]);
+  check('A race\'s current route downloads as a GPX file', !!dl && dl.suggestedFilename() === 'the-challenge.gpx', dl ? dl.suggestedFilename() : 'no download');
+  await page.click('[data-cmap="harare"]'); await page.waitForTimeout(500);
+  check('The Harare practice map shows Harare Prep', (await page.locator('#cmRaces').innerText()).includes('Harare Prep') && await page.locator('#cmRaces .cmrace').count() === 1 && await lines() === 1);
   check('No page errors', errors.length === 0, errors.join(' | '));
 } catch (err) {
   check('Dashboard test run crashed', false, err.message);
