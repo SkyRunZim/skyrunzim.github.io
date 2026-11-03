@@ -1,6 +1,6 @@
 // SkyRunZim: offline race map with live GPS, run recording and course.
 // Keep APP_VERSION in step with SHELL in sw.js.
-const APP_VERSION = 'v17 (2 Nov 2026)';
+const APP_VERSION = 'v18 (3 Nov 2026)';
 const TILE_CACHE = 'tiles-v2';
 // The maps the app can show. Each race says which map it uses ("map" in the
 // race list). Bump a map's tag when its pieces change, so phones download again.
@@ -687,13 +687,21 @@ async function downloadMap(btn, bar, text, id = activeMap) {
     async function worker() {
       while (next < urls.length) {
         const url = urls[next++];
-        try {
-          if (!(await cache.match(url))) {
-            const res = await fetchWithTimeout(url, 15000);
-            if (!res.ok) throw new Error(res.status);
-            await cache.put(url, res);
+        // GitHub occasionally answers "busy" (about 1 piece in 3,000 in a load
+        // test): try again after 1 s, then 3 s, before counting a piece as missing.
+        for (let attempt = 0; ; attempt++) {
+          try {
+            if (!(await cache.match(url))) {
+              const res = await fetchWithTimeout(url, 15000);
+              if (!res.ok) throw new Error(res.status);
+              await cache.put(url, res);
+            }
+            break;
+          } catch {
+            if (attempt === 2) { failed++; break; }
+            await new Promise(r => setTimeout(r, attempt ? 3000 : 1000));
           }
-        } catch { failed++; }
+        }
         done++;
         if (done % 10 === 0 || done === urls.length) {
           bar.firstElementChild.style.width = (100 * done / urls.length) + '%';

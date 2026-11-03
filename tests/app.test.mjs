@@ -448,9 +448,21 @@ try {
   // Pretend this phone still has a piece of an older race map saved.
   await page.evaluate(async () => (await caches.open(TILE_CACHE)).put('tiles-turaco/16/1/1.webp', new Response('old')));
   await page.evaluate(() => openSheet()); await page.waitForTimeout(300);
+  // GitHub now and then answers "busy" (503): seen once in 3,000 pieces in the
+  // venue-wifi load test. Here every 400th piece is refused once.
+  let asked = 0;
+  const refused = new Set();
+  await ctx.route('**/tiles-turaco26/**', route => {
+    const u = route.request().url();
+    if (++asked % 400 === 0 && !refused.has(u)) { refused.add(u); return route.fulfill({ status: 503, body: 'busy' }); }
+    return route.continue();
+  });
   await page.click('#dlBtn');
-  await page.waitForFunction(() => /saved on this phone|missing|failed/.test(document.getElementById('dlText').textContent), null, { timeout: 180000 });
+  await page.waitForFunction(() => /saved on this phone|missing|failed/.test(document.getElementById('dlText').textContent), null, { timeout: 240000 });
+  await ctx.unroute('**/tiles-turaco26/**');
   check('Map download verified', (await text(page, '#dlText')).includes('saved on this phone'), await text(page, '#dlText'));
+  check('Pieces GitHub refuses as "busy" are tried again, so the download still completes', refused.size >= 5 && (await text(page, '#dlText')).includes('saved on this phone'),
+    `${refused.size} pieces refused once`);
   check('Old race map pieces removed after download', await page.evaluate(async () => !(await (await caches.open(TILE_CACHE)).match('tiles-turaco/16/1/1.webp'))));
   check('Race map is the 2026 version', await page.evaluate(() => raceLayer._url.includes('turaco26') && raceBounds.contains([-18.50, 32.72])));
   await page.click('#closeSheet'); await page.waitForTimeout(300);
@@ -527,7 +539,9 @@ try {
   await page.waitForFunction(() => document.getElementById('offlineChip').textContent.includes('not saved'));
   check('Delete offline map', true);
 
-  check('No console errors', errors.length === 0, errors.join(' | '));
+  // (The browser notes each "busy" answer the download test refused on purpose.)
+  const realErrors = errors.filter(e => !/status of 503/.test(e));
+  check('No console errors', realErrors.length === 0, realErrors.join(' | '));
   await ctx.close();
 } catch (err) {
   check('Test run crashed', false, err.stack);
