@@ -60,11 +60,18 @@ drop policy if exists "organisers delete registrations" on public.registrations;
 create policy "organisers delete registrations" on public.registrations
   for delete to authenticated using (public.is_organiser());
 
+-- When the runner accepted the indemnity form in the app, and which wording.
+alter table public.registrations add column if not exists indemnity_at timestamptz;
+alter table public.registrations add column if not exists indemnity_version text;
+
 -- ---------------------------------------------------------------- runner functions
+-- (v19 added the two indemnity arguments; phones still on v18 leave them out.)
+drop function if exists public.register_runner(uuid, text, text, text, boolean, boolean, boolean, text, text);
 create or replace function public.register_runner(
   p_device uuid, p_name text, p_bib text, p_race text,
   p_setup boolean, p_map boolean, p_location boolean,
-  p_app text, p_phone text
+  p_app text, p_phone text,
+  p_indemnity_at timestamptz default null, p_indemnity_ver text default null
 ) returns void
 language plpgsql security definer set search_path = public
 as $$
@@ -73,16 +80,18 @@ begin
     raise exception 'device and name are required';
   end if;
   insert into public.registrations as r
-    (device_id, name, bib, race_id, setup_done, map_saved, location_ok, app_version, phone)
+    (device_id, name, bib, race_id, setup_done, map_saved, location_ok, app_version, phone, indemnity_at, indemnity_version)
   values (
     p_device, left(btrim(p_name), 80), nullif(left(btrim(coalesce(p_bib, '')), 12), ''),
     left(p_race, 40), coalesce(p_setup, false), coalesce(p_map, false), coalesce(p_location, false),
-    left(p_app, 40), left(p_phone, 20))
+    left(p_app, 40), left(p_phone, 20), least(p_indemnity_at, now()), left(p_indemnity_ver, 20))
   on conflict (device_id) do update set
     name = excluded.name, bib = excluded.bib, race_id = excluded.race_id,
     setup_done = excluded.setup_done, map_saved = excluded.map_saved,
     location_ok = excluded.location_ok, app_version = excluded.app_version,
-    phone = excluded.phone, last_seen = now();
+    phone = excluded.phone, last_seen = now(),
+    indemnity_at = coalesce(excluded.indemnity_at, r.indemnity_at),
+    indemnity_version = coalesce(excluded.indemnity_version, r.indemnity_version);
 end;
 $$;
 
@@ -92,9 +101,9 @@ returns void
 language sql security definer set search_path = public
 as $$ delete from public.registrations where device_id = p_device; $$;
 
-revoke all on function public.register_runner(uuid, text, text, text, boolean, boolean, boolean, text, text) from public;
+revoke all on function public.register_runner(uuid, text, text, text, boolean, boolean, boolean, text, text, timestamptz, text) from public;
 revoke all on function public.forget_runner(uuid) from public;
-grant execute on function public.register_runner(uuid, text, text, text, boolean, boolean, boolean, text, text) to anon, authenticated;
+grant execute on function public.register_runner(uuid, text, text, text, boolean, boolean, boolean, text, text, timestamptz, text) to anon, authenticated;
 grant execute on function public.forget_runner(uuid) to anon, authenticated;
 
 -- ---------------------------------------------------------------- live updates
@@ -251,3 +260,54 @@ revoke all on function public.get_route_updates() from public;
 revoke all on function public.get_route(text) from public;
 grant execute on function public.get_route_updates() to anon, authenticated;
 grant execute on function public.get_route(text) to anon, authenticated;
+
+-- ================================================================ start list
+-- The organisers' race sheet (the Excel with one tab per race), dropped on the
+-- dashboard's Start list tab. Each upload replaces the whole list. Only
+-- organisers can see it: runners' phones never download other runners' names.
+create table if not exists public.start_list (
+  bib         text,
+  first_name  text,
+  last_name   text,
+  race_id     text not null,
+  gender      text,
+  nationality text,
+  category    text
+);
+create table if not exists public.start_list_uploads (
+  id          bigint generated always as identity primary key,
+  uploaded_at timestamptz not null default now(),
+  author      text default (auth.jwt() ->> 'email'),
+  file_name   text,
+  runners     int
+);
+alter table public.start_list         enable row level security;
+alter table public.start_list_uploads enable row level security;
+drop policy if exists "organisers read start list" on public.start_list;
+create policy "organisers read start list" on public.start_list
+  for select to authenticated using (public.is_organiser());
+drop policy if exists "organisers read start list uploads" on public.start_list_uploads;
+create policy "organisers read start list uploads" on public.start_list_uploads
+  for select to authenticated using (public.is_organiser());
+
+-- Replace the whole list in one go (all or nothing).
+create or replace function public.replace_start_list(p_file text, p_rows jsonb)
+returns int
+language plpgsql security definer set search_path = public
+as $$
+declare n int;
+begin
+  if not public.is_organiser() then raise exception 'only organisers can change the start list'; end if;
+  delete from public.start_list where true;
+  insert into public.start_list (bib, first_name, last_name, race_id, gender, nationality, category)
+  select left(x.bib, 12), left(x.first_name, 80), left(x.last_name, 80), left(x.race_id, 40),
+         left(x.gender, 20), left(x.nationality, 10), left(x.category, 40)
+  from jsonb_to_recordset(p_rows) as x(bib text, first_name text, last_name text, race_id text, gender text, nationality text, category text)
+  where x.race_id is not null;
+  get diagnostics n = row_count;
+  insert into public.start_list_uploads (file_name, runners) values (left(p_file, 200), n);
+  return n;
+end;
+$$;
+revoke all on function public.replace_start_list(text, jsonb) from public;
+grant execute on function public.replace_start_list(text, jsonb) to authenticated;

@@ -5,7 +5,41 @@ import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { crc32, deflateRawSync } from 'node:zlib';
 import { addCheckpoints, buildRace, compactGpx, heightLookup, readWaypoints } from '../dashboard/route-build.mjs';
+
+// A small Excel workbook, as Excel saves it (zip of XML, compressed), for the start list checks.
+function makeXlsx(sheets) {
+  const x = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const strings = [], si = s => (strings.includes(s) ? strings : strings.push(s) && strings).indexOf(s);
+  const col = i => String.fromCharCode(65 + i);
+  const files = { 'xl/workbook.xml': `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${
+      sheets.map(([n], i) => `<sheet name="${x(n)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>`,
+    'xl/_rels/workbook.xml.rels': `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${
+      sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}</Relationships>` };
+  sheets.forEach(([, rows], i) => {
+    files[`xl/worksheets/sheet${i + 1}.xml`] = `<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rows.map((r, y) => `<row r="${y + 1}">${r.map((v, c) => {
+      const ref = col(c) + (y + 1);
+      if (v && v.error) return `<c r="${ref}" t="e"><v>${v.error}</v></c>`;
+      return /^\d+$/.test(v) ? `<c r="${ref}"><v>${v}</v></c>` : `<c r="${ref}" t="s"><v>${si(v)}</v></c>`;
+    }).join('')}</row>`).join('')}</sheetData></worksheet>`;
+  });
+  files['xl/sharedStrings.xml'] = `<?xml version="1.0"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${strings.map(s => `<si><t>${x(s)}</t></si>`).join('')}</sst>`;
+  const parts = [], central = [];
+  let offset = 0;
+  for (const [name, text] of Object.entries(files)) {
+    const raw = Buffer.from(text), data = deflateRawSync(raw), n = Buffer.from(name), crc = crc32(raw);
+    const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(crc, 14); local.writeUInt32LE(data.length, 18); local.writeUInt32LE(raw.length, 22); local.writeUInt16LE(n.length, 26);
+    const cen = Buffer.alloc(46); cen.writeUInt32LE(0x02014b50, 0); cen.writeUInt16LE(20, 4); cen.writeUInt16LE(20, 6); cen.writeUInt16LE(8, 10);
+    cen.writeUInt32LE(crc, 16); cen.writeUInt32LE(data.length, 20); cen.writeUInt32LE(raw.length, 24); cen.writeUInt16LE(n.length, 28); cen.writeUInt32LE(offset, 42);
+    parts.push(local, n, data); central.push(cen, n);
+    offset += 30 + n.length + data.length;
+  }
+  const cd = Buffer.concat(central), end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(central.length / 2, 8); end.writeUInt16LE(central.length / 2, 10); end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, cd, end]);
+}
 
 const PORT = 8096, URL = `http://localhost:${PORT}/dashboard/`;
 const server = spawn(process.execPath, ['tools/serve.mjs', String(PORT)]);
@@ -55,7 +89,9 @@ try {
     db.from = table => {
       const o = { select: () => o, order: () => o, eq: () => o, in: () => o, single() { o.one = true; return o; },
         insert(row) { window.__inserts.push({ table, row }); o.ins = true; return o; },
-        then: res => Promise.resolve(o.ins && o.one ? { data: { id: 99 }, error: null } : { data: o.one ? null : [], error: null }).then(res) };
+        limit: () => o,
+        then: res => Promise.resolve(o.ins && o.one ? { data: { id: 99 }, error: null }
+          : table === 'start_list' ? { data: window.__startList || [], error: null } : { data: o.one ? null : [], error: null }).then(res) };
       return o;
     };
     Object.defineProperty(db, 'functions', { value: { invoke: async () => ({ data: { sent: 3, failed: 0, phones: 3 }, error: null }) } });
@@ -140,6 +176,55 @@ try {
   check('A race\'s current route downloads as a GPX file', !!dl && dl.suggestedFilename() === 'the-challenge.gpx', dl ? dl.suggestedFilename() : 'no download');
   await page.click('[data-cmap="harare"]'); await page.waitForTimeout(500);
   check('The Harare practice map shows Harare Prep', (await page.locator('#cmRaces').innerText()).includes('Harare Prep') && await page.locator('#cmRaces .cmrace').count() === 1 && await lines() === 1);
+  // ------------------------------------------------------------------
+  // Start list: the race sheet dropped in, checked, saved; phones matched to it.
+  {
+    const sheet = join(mkdtempSync(join(tmpdir(), 'skyrun-')), 'Race Sheet.xlsx');
+    writeFileSync(sheet, makeXlsx([
+      ['Challenge Racesheet', [['Challenge Registration'], ['Number', 'First name', 'Last name', 'Gender', 'Nationality', 'Category'],
+        ['115', 'Ann', 'Smith', 'Female', 'ZW', 'Open'], ['116', 'Benjamin', 'Jones', 'Male', 'ZA', 'Veteran'],
+        ['117', 'Tyla', 'Kennedy', 'Female', 'ZW', { error: '#NUM!' }], ['118'], ['119']]],
+      ['GOAT Racesheet', [['GOAT Registration'], ['Race Number', 'First name', 'Last name'], ['2', 'Kwiri', 'Chí & Co']]],
+      ['Notes', [['Anything else']]],
+    ]));
+    await page.evaluate(() => {
+      window.__rpc = [];
+      db.rpc = async (fn, args) => { window.__rpc.push({ fn, args }); return { data: args.p_rows.length, error: null }; };
+      const t0 = new Date(Date.now() - 3600e3).toISOString();
+      runners = [
+        { device_id: 'd1', name: 'ann smith', bib: '115', race_id: 'the-challenge', setup_done: true, map_saved: true, location_ok: true, indemnity_at: t0, first_seen: t0, last_seen: t0 },
+        { device_id: 'd2', name: 'Ben Jones', bib: '116', race_id: 'the-ultra', setup_done: true, map_saved: false, location_ok: true, first_seen: t0, last_seen: t0 },
+        { device_id: 'd3', name: 'Someone Else', bib: '', race_id: 'the-epic', setup_done: true, map_saved: true, location_ok: true, indemnity_at: t0, first_seen: t0, last_seen: t0 },
+      ];
+      show('startlist');
+      return loadStartList();
+    });
+    check('Start list tab asks for the race sheet when there is none', (await page.locator('#slSub').innerText()).includes('No start list yet'));
+    await page.setInputFiles('#slDrop input', sheet);
+    await page.waitForSelector('#slSave', { timeout: 10000 }).catch(() => {});
+    const checkText = await page.locator('#slCheck').innerText().catch(() => '');
+    check('The dropped sheet is read: runners per race, spare numbers left out', checkText.includes('Race Sheet.xlsx: 4 runners') && checkText.includes('The Challenge: 3') && checkText.includes('The GOAT: 1'), checkText.replace(/\n/g, ' | '));
+    check('Problems in the sheet are pointed out before saving', checkText.includes('Tyla Kennedy (117)') && checkText.includes('#NUM!') && checkText.includes('Tab “Notes” was left out'));
+    await page.click('#slSave');
+    await page.waitForFunction(() => window.__rpc.length, null, { timeout: 5000 }).catch(() => {});
+    const saved = await page.evaluate(() => window.__rpc[0]);
+    check('Saving replaces the start list in one go', !!saved && saved.fn === 'replace_start_list' && saved.args.p_file === 'Race Sheet.xlsx' && saved.args.p_rows.length === 4 &&
+      saved.args.p_rows[3].last_name === 'Chí & Co' && saved.args.p_rows[2].category === null, JSON.stringify(saved && saved.args.p_rows[3]));
+    // The database now holds that list.
+    await page.evaluate(rows => { window.__startList = rows; return loadStartList(); }, saved.args.p_rows);
+    const body = await page.locator('#slBody').innerText();
+    check('Each runner on the list shows whether they are in the app', /115\s+Ann Smith[\s\S]*Race-ready/.test(body) && /116\s+Benjamin Jones[\s\S]*In the app, not ready/.test(body) &&
+      /117\s+Tyla Kennedy[\s\S]*Not in the app yet/.test(body), body.replace(/\n/g, ' | '));
+    check('A different race or name in the app is pointed out', body.includes('Chose The Ultra in the app') && body.includes('Typed their name as “Ben Jones”'));
+    check('Phones not on the start list are listed', (await page.locator('#slExtra').innerText()).includes('Someone Else, The Epic'));
+    check('Race totals against the list', (await page.locator('#slRaces').innerText()).includes('3 on the list · 2 in the app (67%) · 1 race-ready'), await page.locator('#slRaces').innerText());
+    await page.click('[data-slchip="none"]');
+    check('Filter: not in the app yet', (await page.locator('#slBody tr').count()) === 2);
+    await page.evaluate(() => { state.chip = 'all'; renderTable(); });
+    const rt = await page.locator('#tbody').innerText();
+    check('Runners tab flags start-list and indemnity problems', rt.includes('Not on the start list') && rt.includes('Different race on the start list') && rt.includes('Indemnity not accepted'), rt.replace(/\n/g, ' | '));
+    check('Overview counts runners against the start list', (await page.locator('#kpis').innerText()).includes('2/4'), await page.locator('#kpis').innerText());
+  }
   check('No page errors', errors.length === 0, errors.join(' | '));
 } catch (err) {
   check('Dashboard test run crashed', false, err.message);

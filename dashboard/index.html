@@ -219,6 +219,11 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
 .warnline { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 .badline { background: var(--bad-bg); color: var(--bad); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-weight: 600; }
 @media (max-width: 900px) { .rmgrid { grid-template-columns: minmax(0, 1fr); } .rmmap { height: 320px; } }
+.slgrid { display: grid; gap: 14px; }
+.slrace { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+.slrace > div { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13px; color: var(--fg-2); }
+.slrace b { display: block; font-size: 15px; color: var(--fg); }
+.slcheck { border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 8px; }
 .warnbar { background: var(--warn-bg); color: var(--warn); padding: 10px 14px; border-radius: 10px; font-weight: 600; }
 .tabs[hidden], .sync[hidden], [hidden] { display: none !important; }
 </style>
@@ -238,6 +243,7 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
     <nav class="tabs" role="tablist" hidden>
       <button class="tab" role="tab" aria-selected="true" data-view="overview">Overview</button>
       <button class="tab" role="tab" aria-selected="false" data-view="runners">Runners</button>
+      <button class="tab" role="tab" aria-selected="false" data-view="startlist">Start list</button>
       <button class="tab" role="tab" aria-selected="false" data-view="messages">Messages to runners</button>
       <button class="tab" role="tab" aria-selected="false" data-view="course">Course map</button>
       <button class="tab" role="tab" aria-selected="false" data-view="races">Race settings</button>
@@ -293,6 +299,23 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
     </div>
     <div class="tablebox"><table><thead><tr id="thead"></tr></thead><tbody id="tbody"></tbody></table></div>
     <div class="foot"><span>Tap a column heading to sort.</span><span>A runner’s row updates when their phone has signal. Their position is never sent.</span></div>
+  </section>
+  <section class="view panel" id="view-startlist" hidden>
+    <div class="head"><div><h2>Start list</h2><div class="sub" id="slSub">Loading…</div></div>
+      <button class="btn" id="slCopy">Copy names not in the app yet</button></div>
+    <div class="slgrid">
+      <label class="drop" id="slDrop">Drop the updated race sheet (Excel, one tab per race) here, or tap to choose it<input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
+      <div id="slCheck" hidden></div>
+      <div class="slrace" id="slRaces"></div>
+      <div class="tools">
+        <input type="search" id="slQ" placeholder="Search name or number" aria-label="Search name or number">
+        <select id="slRace" aria-label="Race"><option value="">All races</option></select>
+        <div class="chips" id="slChips"></div>
+      </div>
+      <div class="tablebox"><table><thead><tr><th>Number</th><th>Name</th><th>Race</th><th>Category</th><th>In the app</th><th>Indemnity</th></tr></thead><tbody id="slBody"></tbody></table></div>
+      <div id="slExtra"></div>
+    </div>
+    <div class="foot"><span>Runners are matched to the list by race number and name, or by name alone if they gave no number.</span></div>
   </section>
   <section class="view panel" id="view-messages" hidden>
     <div class="head"><div><h2>Messages to runners</h2><div class="sub">Pops up in the app next time each phone has signal, and stays readable offline in the app’s menu</div></div></div>
@@ -396,7 +419,10 @@ function derive() {
   const c = {};
   runners.forEach(r => { if (r.bib) c[r.bib] = (c[r.bib] || 0) + 1; });
   dupBibs = new Set(Object.keys(c).filter(b => c[b] > 1));
+  // Each phone's entry on the start list (see the Start list tab).
+  slMatch = startList && startList.length && slMod ? slMod.matchRunners(startList, runners) : new Map();
 }
+const onList = () => !!(startList && startList.length && slMod);
 function problems(r) {
   const p = [];
   if (r.bib && dupBibs.has(r.bib)) p.push('Bib used twice');
@@ -406,10 +432,15 @@ function problems(r) {
   if (r.app_version && verNum(r.app_version) < verNum(latestApp)) p.push('Old app version');
   if (hoursSince(r.last_seen) > 72) p.push('Not seen for 3+ days');
   if (pushIds && !pushIds.has(r.device_id)) p.push('Notifications off');
+  if (!r.indemnity_at) p.push('Indemnity not accepted');
+  if (onList()) { const m = slMatch.get(r.device_id); if (!m) p.push('Not on the start list'); else if (m.entry.race_id !== r.race_id) p.push('Different race on the start list'); }
   return p;
 }
 const ISSUES = [
   ['bad', 'Bib used twice', 'Two phones registered with the same bib number', r => r.bib && dupBibs.has(r.bib)],
+  ['bad', 'Indemnity not accepted', 'Set up the app before the form was in it: they are asked to accept it when they next open the app', r => !r.indemnity_at],
+  ['warn', 'Different race on the start list', 'Chose a different race in the app from the one on the race sheet', r => onList() && slMatch.get(r.device_id) && slMatch.get(r.device_id).entry.race_id !== r.race_id],
+  ['warn', 'Not on the start list', 'Name and number not found on the race sheet: a typo, a nickname or a late entry', r => onList() && !slMatch.get(r.device_id)],
   ['warn', 'Map not saved', 'The app will not work on the mountain without it', r => r.setup_done && !r.map_saved],
   ['warn', 'Location not allowed', 'The app cannot show where they are', r => r.setup_done && !r.location_ok],
   ['warn', 'Setup not finished', 'Opened the app but stopped part-way through setup', r => !r.setup_done],
@@ -425,7 +456,8 @@ function renderOverview() {
   const attention = runners.filter(r => problems(r).length).length;
   const today = runners.filter(r => hoursSince(r.last_seen) < 24).length;
   $('kpis').innerHTML = [
-    ['Signed in to the app', total, '', total ? 'Runners who have entered their details in the app' : 'No runners yet', null],
+    onList() ? ['Signed in to the app', new Set([...slMatch.values()].map(m => m.entry)).size, `<small>/${startList.length}</small>`, 'Runners on the start list who are in the app', pct(new Set([...slMatch.values()].map(m => m.entry)).size, startList.length)]
+      : ['Signed in to the app', total, '', total ? 'Runners who have entered their details in the app' : 'No runners yet', null],
     ['Race-ready', readyN, `<small>/${total}</small>`, `${pct(readyN, total)}%: map saved and location on`, pct(readyN, total)],
     ['Need attention', attention, '', 'Runners with at least one problem', null, attention > 0],
     ['Seen in the last day', today, `<small>/${total}</small>`, 'Opened the app with signal', pct(today, total)],
@@ -498,7 +530,7 @@ addEventListener('resize', () => { if (!$('app').hidden) drawChart(); });
 const state = { q: '', race: '', chip: 'all', issue: null, sort: 'bib', dir: 1 };
 const CHIPS = [['all', 'All'], ['ready', 'Race-ready'], ['notready', 'Not ready'], ['problems', 'Has a problem']];
 $('chips').innerHTML = CHIPS.map(([k, l]) => `<button class="chip" data-chip="${k}" aria-pressed="${k === 'all'}">${l}</button>`).join('');
-const COLS = [['bib', 'Bib'], ['name', 'Name'], ['race', 'Race'], ['setup', 'Setup'], ['map', 'Map saved'], ['loc', 'Location'], ['push', 'Notifications'], ['app', 'App'], ['phone', 'Phone'], ['first', 'Signed in'], ['seen', 'Last seen'], ['status', 'Status']];
+const COLS = [['bib', 'Bib'], ['name', 'Name'], ['race', 'Race'], ['setup', 'Setup'], ['map', 'Map saved'], ['loc', 'Location'], ['push', 'Notifications'], ['indem', 'Indemnity'], ['app', 'App'], ['phone', 'Phone'], ['first', 'Signed in'], ['seen', 'Last seen'], ['status', 'Status']];
 $('thead').innerHTML = COLS.map(([k, l]) => `<th data-sort="${k}" scope="col">${l}</th>`).join('');
 const yn = (v, on = true) => (!on ? '<span class="q">–</span>' : v ? '<span class="y">✓ Yes</span>' : '<span class="n">✕ No</span>');
 function seenText(t) {
@@ -509,7 +541,7 @@ const dateText = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', 
 function statusOf(r) {
   const p = problems(r);
   if (ready(r) && !p.length) return ['ok', 'Race-ready'];
-  if (p.some(x => /twice|Setup|Map|Location/.test(x))) return ['bad', 'Not ready'];
+  if (p.some(x => /twice|Setup|Map|Location|Indemnity/.test(x))) return ['bad', 'Not ready'];
   return ['warn', ready(r) ? 'Ready, check' : 'Not ready'];
 }
 function filtered() {
@@ -523,7 +555,7 @@ function filtered() {
     return true;
   });
   const keys = { bib: r => (isNaN(+r.bib) ? r.bib || '' : +r.bib), name: r => r.name.toLowerCase(), race: r => raceName(r.race_id), setup: r => r.setup_done, map: r => r.map_saved,
-    loc: r => r.location_ok, push: r => !!(pushIds && pushIds.has(r.device_id)), app: r => verNum(r.app_version), phone: r => r.phone || '', first: r => r.first_seen, seen: r => -new Date(r.last_seen), status: r => statusOf(r)[1] };
+    loc: r => r.location_ok, push: r => !!(pushIds && pushIds.has(r.device_id)), indem: r => r.indemnity_at || '', app: r => verNum(r.app_version), phone: r => r.phone || '', first: r => r.first_seen, seen: r => -new Date(r.last_seen), status: r => statusOf(r)[1] };
   const key = keys[state.sort];
   return list.sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * state.dir);
 }
@@ -534,20 +566,20 @@ function renderTable() {
     const [cls, label] = statusOf(r), p = problems(r);
     const old = r.app_version && verNum(r.app_version) < verNum(latestApp);
     return `<tr><td class="bib num">${esc(r.bib) || '<span class="q">–</span>'}</td><td>${esc(r.name)}${p.length ? `<div class="flag">${esc(p.join(' · '))}</div>` : ''}</td>
-      <td>${esc(raceName(r.race_id))}</td><td>${yn(r.setup_done)}</td><td>${yn(r.map_saved, r.setup_done)}</td><td>${yn(r.location_ok, r.setup_done)}</td><td>${yn(pushIds && pushIds.has(r.device_id), !!pushIds)}</td>
+      <td>${esc(raceName(r.race_id))}</td><td>${yn(r.setup_done)}</td><td>${yn(r.map_saved, r.setup_done)}</td><td>${yn(r.location_ok, r.setup_done)}</td><td>${yn(pushIds && pushIds.has(r.device_id), !!pushIds)}</td><td>${r.indemnity_at ? `<span class="y">✓ ${dateText(r.indemnity_at)}</span>` : '<span class="n">✕ No</span>'}</td>
       <td>${r.app_version ? (old ? `<span class="n">${esc(r.app_version)}</span>` : esc(r.app_version)) : '<span class="q">–</span>'}</td><td>${esc(r.phone) || '<span class="q">–</span>'}</td>
       <td class="num">${dateText(r.first_seen)}</td><td class="num">${seenText(r.last_seen)}</td><td><span class="pill ${cls}">${label}</span></td></tr>`;
-  }).join('') || `<tr><td colspan="12" class="q">${runners.length ? 'No runners match these filters.' : 'No runners have signed in yet.'}</td></tr>`;
+  }).join('') || `<tr><td colspan="13" class="q">${runners.length ? 'No runners match these filters.' : 'No runners have signed in yet.'}</td></tr>`;
   document.querySelectorAll('[data-chip]').forEach(b => b.setAttribute('aria-pressed', b.dataset.chip === state.chip && state.issue == null));
-  document.querySelectorAll('th').forEach(th => (th.textContent = COLS.find(c => c[0] === th.dataset.sort)[1] + (th.dataset.sort === state.sort ? (state.dir > 0 ? ' ▲' : ' ▼') : '')));
+  document.querySelectorAll('#thead th').forEach(th => (th.textContent = COLS.find(c => c[0] === th.dataset.sort)[1] + (th.dataset.sort === state.sort ? (state.dir > 0 ? ' ▲' : ' ▼') : '')));
 }
 $('q').addEventListener('input', e => { state.q = e.target.value.trim().toLowerCase(); renderTable(); });
 $('raceSel').addEventListener('change', e => { state.race = e.target.value; renderTable(); });
 $('chips').addEventListener('click', e => { const b = e.target.closest('[data-chip]'); if (b) { state.chip = b.dataset.chip; state.issue = null; renderTable(); } });
 $('thead').addEventListener('click', e => { const th = e.target.closest('th'); if (!th) return; state.dir = state.sort === th.dataset.sort ? -state.dir : 1; state.sort = th.dataset.sort; renderTable(); });
 $('copyCsv').addEventListener('click', () => {
-  const rows = [['Bib', 'Name', 'Race', 'Setup finished', 'Map saved', 'Location', 'Notifications', 'App', 'Phone', 'Signed in', 'Last seen', 'Status', 'Problems']]
-    .concat(filtered().map(r => [r.bib || '', r.name, raceName(r.race_id), r.setup_done, r.map_saved, r.location_ok, !!(pushIds && pushIds.has(r.device_id)), r.app_version || '', r.phone || '',
+  const rows = [['Bib', 'Name', 'Race', 'Setup finished', 'Map saved', 'Location', 'Notifications', 'Indemnity accepted', 'App', 'Phone', 'Signed in', 'Last seen', 'Status', 'Problems']]
+    .concat(filtered().map(r => [r.bib || '', r.name, raceName(r.race_id), r.setup_done, r.map_saved, r.location_ok, !!(pushIds && pushIds.has(r.device_id)), r.indemnity_at ? new Date(r.indemnity_at).toLocaleString('en-GB') : '', r.app_version || '', r.phone || '',
       new Date(r.first_seen).toLocaleString('en-GB'), new Date(r.last_seen).toLocaleString('en-GB'), statusOf(r)[1], problems(r).join('; ')]));
   copy(rows.map(r => r.map(c => String(c).replace(/[\t\n]/g, ' ')).join('\t')).join('\n'), `${rows.length - 1} rows. Paste into Excel`);
 });
@@ -559,9 +591,121 @@ function show(v) {
   if (v === 'overview') drawChart();
   if (v === 'course') courseMap.open();
 }
+
+// ---- Start list ----
+// Chris's race sheet (Excel), read in the browser by start-list.mjs and kept
+// in the start_list table. Each runner's phone is matched to it, so the
+// organisers see who on the list has not set up the app yet.
+let startList = null, slUpload = null, slMatch = new Map(), slLib = null, slMod = null, slPending = null;
+const sl = () => (slLib ||= import('./start-list.mjs'));
+const slState = { q: '', race: '', chip: 'all' };
+const SL_CHIPS = [['all', 'Everyone'], ['none', 'Not in the app yet'], ['partial', 'In the app, not ready'], ['ready', 'Race-ready'], ['indem', 'Indemnity not accepted']];
+$('slChips').innerHTML = SL_CHIPS.map(([k, l]) => `<button class="chip" data-slchip="${k}" aria-pressed="${k === 'all'}">${l}</button>`).join('');
+async function loadStartList() {
+  const [a, b] = await Promise.all([db.from('start_list').select('*'), db.from('start_list_uploads').select('*').order('id', { ascending: false }).limit(1)]);
+  if (a.error) { startList = null; $('slSub').textContent = `The start list is not set up yet (${a.error.message}). Run the latest supabase/schema.sql.`; return; }
+  slMod = await sl();
+  startList = a.data; slUpload = (b.data || [])[0] || null;
+  renderAll();
+}
+// The phone that belongs to each entry (the most recently seen, if several).
+function slPhones() {
+  const byEntry = new Map();
+  for (const r of runners) {
+    const m = slMatch.get(r.device_id);
+    if (!m) continue;
+    const cur = byEntry.get(m.entry);
+    if (!cur || new Date(r.last_seen) > new Date(cur.reg.last_seen)) byEntry.set(m.entry, { reg: r, how: m.how });
+  }
+  return byEntry;
+}
+const slStatus = p => (!p ? 'none' : ready(p.reg) ? 'ready' : 'partial');
+function renderStartList() {
+  if (!startList || !slMod) return;
+  const { fullName } = slMod;
+  const phones = slPhones(), sortBib = (a, b) => (+a.bib || 1e9) - (+b.bib || 1e9);
+  $('slSub').textContent = startList.length
+    ? `${startList.length} runners${slUpload ? ` · from ${slUpload.file_name || 'the race sheet'}, uploaded ${when(slUpload.uploaded_at)}${slUpload.author ? ' by ' + slUpload.author : ''}` : ''}`
+    : 'No start list yet: drop the race sheet below.';
+  $('slRace').innerHTML = '<option value="">All races</option>' + RACES.filter(r => startList.some(e => e.race_id === r.id))
+    .map(r => `<option value="${esc(r.id)}"${r.id === slState.race ? ' selected' : ''}>${esc(r.name)}</option>`).join('');
+  $('slRaces').innerHTML = RACES.filter(r => startList.some(e => e.race_id === r.id)).map(r => {
+    const list = startList.filter(e => e.race_id === r.id), st = list.map(e => slStatus(phones.get(e)));
+    const n = list.length, inApp = st.filter(s => s !== 'none').length, rd = st.filter(s => s === 'ready').length;
+    return `<div><b>${esc(r.name)}</b>${n} on the list · ${inApp} in the app (${pct(inApp, n)}%) · ${rd} race-ready<div class="meter"><i style="width:${pct(inApp, n)}%"></i></div></div>`;
+  }).join('');
+  const rows = startList.filter(e => {
+    const p = phones.get(e), s = slStatus(p);
+    if (slState.race && e.race_id !== slState.race) return false;
+    if (slState.q && !`${e.bib || ''} ${fullName(e)}`.toLowerCase().includes(slState.q)) return false;
+    if (slState.chip === 'indem') return !(p && p.reg.indemnity_at);
+    return slState.chip === 'all' || slState.chip === s;
+  }).sort(sortBib);
+  $('slBody').innerHTML = rows.map(e => {
+    const p = phones.get(e), s = slStatus(p), notes = [];
+    if (p && p.reg.race_id !== e.race_id) notes.push(`Chose ${raceName(p.reg.race_id)} in the app`);
+    if (p && p.how === 'number only') notes.push(`Typed their name as “${p.reg.name}”`);
+    if (p && p.how === 'name' && p.reg.bib && p.reg.bib !== e.bib) notes.push(`Typed race number ${p.reg.bib}`);
+    const app = s === 'none' ? '<span class="pill off">Not in the app yet</span>' : s === 'ready' ? `<span class="pill ok">Race-ready</span>` : `<span class="pill warn">In the app, not ready</span>`;
+    return `<tr><td class="bib num">${esc(e.bib) || '<span class="q">–</span>'}</td><td>${esc(fullName(e))}${notes.length ? `<div class="flag">${esc(notes.join(' · '))}</div>` : ''}</td>
+      <td>${esc(raceName(e.race_id))}</td><td>${esc(e.category) || '<span class="q">–</span>'}</td><td>${app}${p ? ` <span class="q">${seenText(p.reg.last_seen)}</span>` : ''}</td>
+      <td>${p ? (p.reg.indemnity_at ? `<span class="y">✓ ${dateText(p.reg.indemnity_at)}</span>` : '<span class="n">✕ Not yet</span>') : '<span class="q">–</span>'}</td></tr>`;
+  }).join('') || `<tr><td colspan="6" class="q">${startList.length ? 'Nobody on the list matches these filters.' : 'No start list yet.'}</td></tr>`;
+  document.querySelectorAll('[data-slchip]').forEach(b => b.setAttribute('aria-pressed', b.dataset.slchip === slState.chip));
+  // Phones that match nobody on the list: a typo, a nickname, or a late entry.
+  const extra = runners.filter(r => !slMatch.has(r.device_id));
+  $('slExtra').innerHTML = startList.length && extra.length ? `<div class="warnline">${extra.length} signed in to the app but not found on the start list: ${extra.map(r => `${esc(r.name)}${r.bib ? ' (' + esc(r.bib) + ')' : ''}, ${esc(raceName(r.race_id))}`).join('; ')}.
+    Check the spelling in the race sheet, or ask them to correct their details in the app (Menu > Edit my details).</div>` : '';
+}
+$('slQ').addEventListener('input', e => { slState.q = e.target.value.trim().toLowerCase(); renderStartList(); });
+$('slRace').addEventListener('change', e => { slState.race = e.target.value; renderStartList(); });
+$('slChips').addEventListener('click', e => { const b = e.target.closest('[data-slchip]'); if (b) { slState.chip = b.dataset.slchip; renderStartList(); } });
+$('slCopy').addEventListener('click', async () => {
+  if (!startList) return;
+  const { fullName } = await sl(), phones = slPhones();
+  const list = startList.filter(e => !phones.get(e) && (!slState.race || e.race_id === slState.race)).sort((a, b) => (+a.bib || 1e9) - (+b.bib || 1e9));
+  copy(list.map(e => `${e.bib || '-'} ${fullName(e)}, ${raceName(e.race_id)}`).join('\n'), `${list.length} names not in the app yet`);
+});
+
+// A new race sheet: read it, show what it holds and what changes, then save.
+const slDrop = $('slDrop');
+slDrop.addEventListener('dragover', e => { e.preventDefault(); slDrop.classList.add('over'); });
+slDrop.addEventListener('dragleave', () => slDrop.classList.remove('over'));
+slDrop.addEventListener('drop', e => { e.preventDefault(); slDrop.classList.remove('over'); if (e.dataTransfer.files[0]) slFromFile(e.dataTransfer.files[0]); });
+slDrop.querySelector('input').addEventListener('change', e => { if (e.target.files[0]) slFromFile(e.target.files[0]); e.target.value = ''; });
+function slNote(html) { $('slCheck').hidden = !html; $('slCheck').innerHTML = html ? `<div class="slcheck">${html}</div>` : ''; }
+async function slFromFile(file) {
+  slNote(`<div><span class="spin"></span>Reading ${esc(file.name)}…</div>`);
+  try {
+    if (!/\.xlsx$/i.test(file.name)) throw new Error(`${file.name} is not an Excel workbook (.xlsx). In Excel, use File > Save As > Excel Workbook.`);
+    const { readXlsx, parseStartList, fullName } = await sl();
+    const got = parseStartList(await readXlsx(await file.arrayBuffer()));
+    const key = e => `${e.race_id}|${e.bib || ''}|${fullName(e).toLowerCase()}`;
+    const before = new Set((startList || []).map(key)), after = new Set(got.entries.map(key));
+    const added = got.entries.filter(e => !before.has(key(e))), removed = (startList || []).filter(e => !after.has(key(e)));
+    const names = list => list.slice(0, 12).map(e => `${esc(e.bib || '-')} ${esc(fullName(e))}`).join(', ') + (list.length > 12 ? ` and ${list.length - 12} more` : '');
+    slPending = { file: file.name, entries: got.entries };
+    slNote(`<b>${esc(file.name)}: ${got.entries.length} runners</b>
+      <div class="notice">${got.tabs.map(t => `${esc(raceName(t.race))}: ${t.runners}`).join(' · ')}</div>
+      ${startList && startList.length ? `<div class="notice">Compared with the list now: ${added.length} new or changed${added.length ? ` (${names(added)})` : ''}; ${removed.length} taken off or changed${removed.length ? ` (${names(removed)})` : ''}.</div>` : ''}
+      ${got.warnings.map(w => `<div class="warnline">${esc(w)}</div>`).join('')}
+      <div class="acts" style="justify-content:flex-start"><button class="btn primary" id="slSave"${got.entries.length ? '' : ' disabled'}>Save as the start list</button><button class="btn" id="slCancel">Cancel</button></div>`);
+    $('slSave').onclick = slSave;
+    $('slCancel').onclick = () => { slPending = null; slNote(''); };
+  } catch (err) { slNote(`<div class="badline">✕ ${esc(err.message || err)}</div>`); }
+}
+async function slSave() {
+  if (!slPending) return;
+  $('slSave').disabled = true;
+  const { data, error } = await db.rpc('replace_start_list', { p_file: slPending.file, p_rows: slPending.entries });
+  if (error) { slNote(`<div class="badline">✕ Not saved: ${esc(error.message)}</div>`); return; }
+  slPending = null; slNote('');
+  toast(`Start list saved: ${data} runners`);
+  await loadStartList();
+}
 document.querySelector('.tabs').addEventListener('click', e => { const t = e.target.closest('.tab'); if (t) show(t.dataset.view); });
 
-function renderAll() { derive(); renderOverview(); renderTable(); renderMsgs(); }
+function renderAll() { derive(); renderOverview(); renderTable(); renderMsgs(); renderStartList(); }
 
 // ---- Messages to runners ----
 let messages = [], reads = [];
@@ -979,6 +1123,7 @@ async function signedIn(session) {
   await loadAll();
   loadMsgs();
   loadRoutes();
+  loadStartList();
   goLive();
 }
 $('loginForm').addEventListener('submit', async e => {

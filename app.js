@@ -1,6 +1,9 @@
 // SkyRunZim: offline race map with live GPS, run recording and course.
 // Keep APP_VERSION in step with SHELL in sw.js.
-const APP_VERSION = 'v18 (3 Nov 2026)';
+const APP_VERSION = 'v19 (6 Nov 2026)';
+// The indemnity text is data/indemnity.html. Change this when its wording
+// changes: every runner is then asked to accept the new one.
+const INDEMNITY_VERSION = '2026-1';
 const TILE_CACHE = 'tiles-v2';
 // The maps the app can show. Each race says which map it uses ("map" in the
 // race list). Bump a map's tag when its pieces change, so phones download again.
@@ -756,6 +759,8 @@ let course = null, courseLayer = null, lastAlong = null, races = [];
 // organisers can see every runner is ready (the setup screen says so).
 const profile = (() => { try { return JSON.parse(pref('profile')) || {}; } catch { return {}; } })();
 const saveProfile = () => pref('profile', JSON.stringify(profile));
+// Accepted the current indemnity form (when, and which wording, go to race control).
+const indemnityOk = () => !!(profile.indemnity && profile.indemnity.version === INDEMNITY_VERSION);
 
 // =====================================================================
 // Race control: every runner's name, bib, race and app readiness (NEVER
@@ -783,6 +788,7 @@ const sync = {
       p_device: this.deviceId(), p_name: profile.name || '', p_bib: profile.bib || '', p_race: profile.raceId || '',
       p_setup: !!profile.setupDone, p_map: mapSaved((r && r.map) || 'nyanga'),
       p_location: gps.perm === 'granted' || !!gps.fix, p_app: APP_VERSION.split(' ')[0], p_phone: phoneType(),
+      p_indemnity_at: indemnityOk() ? profile.indemnity.at : null, p_indemnity_ver: indemnityOk() ? profile.indemnity.version : null,
     };
   },
   // Several changes in a row become one send.
@@ -1015,7 +1021,9 @@ function renderRaceInfo() {
     ['Name', profile.name || '-'],
     ['Bib number', profile.bib || '-'],
     ['Race', info ? `${info.name}, ${info.stages ? info.stages.length + ' days, ' : ''}${info.distanceKm} km, ${info.climbM} m climb` : 'Not chosen'],
-    ['Route version', info ? String(info.version) : '-'],  ];
+    ['Route version', info ? String(info.version) : '-'],
+    ['Indemnity form', indemnityOk() ? 'Accepted ' + new Date(profile.indemnity.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Not accepted'],
+  ];
   $('raceText').innerHTML = rows.map(([k, v]) => `<div class="row"><span>${escapeHtml(k)}</span><b>${escapeHtml(v)}</b></div>`).join('');
 }
 
@@ -1191,7 +1199,7 @@ const setup = {
   },
 
   render() {
-    const b = $('setupBody'), steps = ['welcome', 'details', 'race', 'map', 'location', 'alerts', 'ready'];
+    const b = $('setupBody'), steps = ['welcome', 'indemnity', 'details', 'race', 'map', 'location', 'alerts', 'ready'];
     $('setupStep').textContent = this.changing ? '' : `Step ${steps.indexOf(this.step) + 1} of ${steps.length}`;
     const html = this[this.step]();
     b.innerHTML = html;
@@ -1207,7 +1215,37 @@ const setup = {
       <p>Setup takes about 3 minutes. <b>Use wifi</b>: the map download is about 30 to 45 MB.</p>${iphoneWarning}
       <button class="btn" data-go="details">${isIOS && !isStandalone ? 'Set up in Safari anyway' : 'Start'}</button>`;
   },
-  wire_welcome() { $('setupBody').querySelector('[data-go]').onclick = () => this.go('details'); },
+  wire_welcome() { $('setupBody').querySelector('[data-go]').onclick = () => this.go(indemnityOk() ? 'details' : 'indemnity'); },
+
+  // The organisers' indemnity form: read to the end, acknowledge, then confirm
+  // again in a box of its own, for anyone who skimmed it. There is no way past it.
+  indemnity() {
+    return `<h2>Indemnity form</h2>
+      <p>Every runner must read and accept this before taking part.${this.changing ? ' It is new since you set up the app.' : ''}</p>
+      <div class="indem" id="indemText">${SPIN}Loading the form…</div>
+      <button class="btn" id="indemAck" disabled>Acknowledge and proceed</button>
+      ${this.changing ? '' : '<button class="btn secondary" id="suBack">Back</button>'}`;
+  },
+  async wire_indemnity() {
+    const box = $('indemText'), ack = $('indemAck');
+    if ($('suBack')) $('suBack').onclick = () => this.go('welcome');
+    ack.onclick = () => $('indemPop').classList.add('open');
+    try {
+      const res = await fetch('data/indemnity.html');
+      if (!res.ok) throw new Error('status ' + res.status);
+      box.innerHTML = await res.text();
+      ack.disabled = false;
+    } catch (err) {
+      box.textContent = 'The form could not be opened (' + (err.message || err) + '). Close the app, connect to the internet and open it again.';
+    }
+  },
+  acceptIndemnity() {
+    $('indemPop').classList.remove('open');
+    profile.indemnity = { version: INDEMNITY_VERSION, at: new Date().toISOString() };
+    saveProfile();
+    sync.soon();
+    if (this.changing) { this.close(); renderRaceInfo(); toast('Thank you. The indemnity form is accepted.'); } else this.go('details');
+  },
 
   details() {
     return `<h2>Your details</h2>
@@ -1228,7 +1266,7 @@ const setup = {
       if (this.changing) sync.soon();
       if (this.changing) { this.close(); renderRaceInfo(); toast('Details saved.'); } else this.go('race');
     };
-    if ($('suBack')) $('suBack').onclick = () => this.go('welcome');
+    if ($('suBack')) $('suBack').onclick = () => this.go('indemnity');
     if ($('suCancel')) $('suCancel').onclick = () => this.close();
   },
 
@@ -1335,6 +1373,7 @@ const setup = {
     const r = races.find(x => x.id === this.picked);
     const row = (ok, text) => `<div class="check ${ok ? 'ok' : 'warn'}">${ok ? '✓' : '⚠'} ${text}</div>`;
     return `<h2>Ready to race</h2>
+      ${row(indemnityOk(), indemnityOk() ? 'Indemnity form accepted' : 'Indemnity form not accepted')}
       ${row(!!profile.name, `Name: ${escapeHtml(profile.name || 'not given')}${profile.bib ? ', bib ' + escapeHtml(profile.bib) : ''}`)}
       ${row(!!r, r ? `Race: ${escapeHtml(r.name)}, ${r.distanceKm} km` : 'No race chosen')}
       ${row(mapSaved(this.mapId()), mapSaved(this.mapId()) ? 'Map saved for offline use' : 'Map NOT saved: download it from the menu before you go')}
@@ -1349,6 +1388,8 @@ const setup = {
   },
 };
 
+$('indemYes').onclick = () => setup.acceptIndemnity();
+$('indemNo').onclick = () => $('indemPop').classList.remove('open');
 $('changeRaceBtn').onclick = () => setup.open('race', true);
 $('editDetailsBtn').onclick = () => setup.open('details', true);
 $('raceChip').onclick = () => openSheet();
@@ -1449,6 +1490,8 @@ try { localStorage.removeItem('course'); } catch {} // courses loaded by hand in
 renderRaceInfo();
 if (profile.setupDone && profile.raceId) {
   showRace(profile.raceId).catch(err => { renderRaceInfo(); toast(err.message || String(err), 6000); setup.open('race', true); });
+  // Set up before the indemnity form was in the app (or its wording changed): accept it first.
+  if (!indemnityOk()) setup.open('indemnity', true);
 } else {
   setup.open('welcome');
 }

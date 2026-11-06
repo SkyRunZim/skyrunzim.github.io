@@ -9,7 +9,7 @@ const PORT = 8093, URL = `http://localhost:${PORT}/`;
 const EDDY = { latitude: -18.395, longitude: 32.835 };     // on the race map
 const HARARE = { latitude: -17.83, longitude: 31.05 };      // far outside
 // A runner who has already been through setup (used unless a test wants a fresh phone).
-const SET_UP = { setupDone: true, raceId: 'the-challenge', name: 'Test Runner', raceVersion: 1 };
+const SET_UP = { setupDone: true, raceId: 'the-challenge', name: 'Test Runner', raceVersion: 1, indemnity: { version: '2026-1', at: '2026-11-01T08:00:00.000Z' } };
 
 const server = spawn(process.execPath, ['tools/serve.mjs', String(PORT)]);
 await new Promise(r => server.stdout.once('data', r));
@@ -136,6 +136,31 @@ try {
   }
 
   // ------------------------------------------------------------------
+  // Set up before the indemnity form was in the app: asked for it on opening, no way round it
+  {
+    const { ctx, page, errors } = await newPage({ fresh: true });
+    await ctx.addInitScript(p => { if (!localStorage.getItem('profile')) localStorage.setItem('profile', p); },
+      JSON.stringify({ setupDone: true, raceId: 'the-challenge', name: 'Early Runner', bib: '200', raceVersion: 1 }));
+    await page.goto(URL);
+    await page.waitForFunction(() => !document.getElementById('indemAck')?.disabled, null, { timeout: 8000 }).catch(() => {});
+    check('A runner set up before v19 is shown the indemnity form on opening', await page.locator('#setup').isVisible() &&
+      (await text(page, '#setupBody')).includes('It is new since you set up the app') && !(await page.locator('#suBack').count()));
+    await page.click('#indemAck'); await page.click('#indemYes');
+    await page.waitForTimeout(300);
+    check('Once confirmed, the runner is back on their map', !(await page.locator('#setup').isVisible()) && (await text(page, '#toast')).includes('indemnity form is accepted'));
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem('profile')).syncedSig?.includes('2026-1'), null, { timeout: 8000 }).catch(() => {});
+    const reg = page.calls.filter(c => c.fn === 'register_runner').pop();
+    check('Their acceptance goes to race control', !!reg && reg.body.p_name === 'Early Runner' && reg.body.p_indemnity_ver === '2026-1', JSON.stringify(reg && reg.body));
+    await page.reload();
+    await page.waitForFunction(() => course && course.info);
+    check('After accepting, it is not asked again', !(await page.locator('#setup').isVisible()));
+    await page.click('#menuBtn'); await page.waitForTimeout(300);
+    check('The menu shows when the form was accepted', /Indemnity form\s*Accepted \d+ Nov 2026/.test(await text(page, '#raceText')), await text(page, '#raceText'));
+    check('No errors (indemnity on opening)', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  }
+
+  // ------------------------------------------------------------------
   // First-time setup: name, race, map, location
   {
     const { ctx, page, errors } = await newPage({ fresh: true, permissions: ['geolocation'], geolocation: { ...EDDY, accuracy: 8 } });
@@ -144,6 +169,21 @@ try {
     await page.goto(URL);
     check('Fresh install opens setup', await page.locator('#setup').isVisible() && (await text(page, '#setupStep')).includes('Step 1'));
     await page.click('#setupBody [data-go]');
+    // The indemnity form: read, acknowledge, then confirm in a second box.
+    await page.waitForFunction(() => !document.getElementById('indemAck').disabled);
+    const form = await text(page, '#indemText');
+    check('Setup step 2 is the indemnity form, in full', (await text(page, '#setupStep')).includes('Step 2 of 8') && form.includes('SkyRun Zimbabwe Indemnity Form') &&
+      form.includes('1. Understanding and acknowledgment of risk') && form.includes('10. Legal terms') && form.includes('Declaration'));
+    const ack = await page.locator('#indemAck').boundingBox(), formBox = await page.locator('#indemText').boundingBox();
+    check('Acknowledge and proceed is at the bottom of the form', (await text(page, '#indemAck')) === 'Acknowledge and proceed' && ack.y > formBox.y + formBox.height);
+    await page.click('#indemAck');
+    check('Acknowledging asks for confirmation in a second box', await page.locator('#indemPop').isVisible() &&
+      (await text(page, '#indemPop')).includes('By confirming this you agree to the stated conditions'));
+    await shot(page, '7-indemnity-confirm');
+    await page.click('#indemNo');
+    check('Going back keeps the runner on the form', !(await page.locator('#indemPop').isVisible()) && await page.locator('#indemText').isVisible());
+    await page.click('#indemAck'); await page.click('#indemYes');
+    check('Confirming moves on to the runner\'s details', await page.locator('#suName').isVisible());
     check('Name is required', await page.locator('#suNext').isDisabled());
     await page.fill('#suName', 'Tendai Moyo');
     await page.fill('#suBib', '142');
@@ -172,6 +212,7 @@ try {
     await page.click('#suNext');
     const ready = await text(page, '#setupBody');
     check('Ready screen says notifications are off', ready.includes('Notifications off'));
+    check('Ready screen says the indemnity form is accepted', ready.includes('Indemnity form accepted'));
     check('Ready screen summarises name, bib, race, map and location',
       ready.includes('Tendai Moyo, bib 142') && ready.includes('Race: The Challenge') && ready.includes('Map NOT saved') && ready.includes('Location working'));
     await shot(page, '9-setup-ready');
@@ -190,6 +231,7 @@ try {
     check('Race control gets name, bib, race and readiness (no position)', !!reg && reg.body.p_name === 'Tendai Moyo' && reg.body.p_bib === '142' &&
       reg.body.p_race === 'the-challenge' && reg.body.p_setup === true && reg.body.p_map === false && reg.body.p_location === true &&
       /^v\d+$/.test(reg.body.p_app) && !JSON.stringify(reg.body).match(/lat|lon|-18\./), JSON.stringify(reg && reg.body));
+    check('Race control gets when the indemnity form was accepted', !!reg && reg.body.p_indemnity_ver === '2026-1' && Math.abs(Date.now() - new Date(reg.body.p_indemnity_at)) < 120e3);
     await page.reload();
     await page.waitForFunction(() => course && course.info);
     check('After restart: no setup, same race', !(await page.locator('#setup').isVisible()) && (await text(page, '#raceChip')).startsWith('The Challenge'));

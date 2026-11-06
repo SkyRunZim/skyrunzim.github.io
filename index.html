@@ -178,6 +178,11 @@
   .check.ok { background: #eaf4ee; color: var(--ok); }
   .check.warn { background: #fff3e0; color: var(--amber); }
   .warnbox { background: #fff3e0; }
+  .indem { border: 2px solid #ccc; border-radius: 12px; padding: 4px 14px 10px; margin: 12px 0; font-size: 15px; line-height: 1.45; background: #fafaf7; }
+  .indem h3 { margin: 12px 0 4px; font-size: 18px; }
+  .indem h4 { margin: 16px 0 4px; font-size: 15px; }
+  .indem ul { padding-left: 20px; margin: 6px 0; }
+  .indem li { margin: 4px 0; }
 
   /* Loading wheel */
   .spin { display: inline-block; width: 13px; height: 13px; margin-right: 6px; vertical-align: -2px; border-radius: 50%;
@@ -355,6 +360,14 @@
   </div>
 </div>
 
+<div class="msgpop" id="indemPop" role="alertdialog" aria-labelledby="indemPopText">
+  <div class="card">
+    <h2>Please confirm</h2>
+    <p id="indemPopText"><b>By confirming this you agree to the stated conditions</b> in the SkyRun Zimbabwe Indemnity Form.</p>
+    <button class="btn" id="indemYes">Confirm</button>
+    <button class="btn secondary" id="indemNo">Go back and read it</button>
+  </div>
+</div>
 <div class="msgpop" id="msgPop" role="dialog" aria-label="Message from race control">
   <div class="card">
     <h2>📣 Message from race control</h2>
