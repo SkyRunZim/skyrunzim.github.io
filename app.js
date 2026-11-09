@@ -1,6 +1,6 @@
 // SkyRunZim: offline race map with live GPS, run recording and course.
 // Keep APP_VERSION in step with SHELL in sw.js.
-const APP_VERSION = 'v19 (6 Nov 2026)';
+const APP_VERSION = 'v20 (9 Nov 2026)';
 // The indemnity text is data/indemnity.html. Change this when its wording
 // changes: every runner is then asked to accept the new one.
 const INDEMNITY_VERSION = '2026-1';
@@ -199,13 +199,15 @@ function freshness(fix) {
   return { age, level };
 }
 
-// Heading only when it can be trusted: GPS course while moving, otherwise
-// the compass if the runner switched it on.
+// Heading: GPS course while moving, otherwise the phone's compass (always on).
+// A phone only reports the compass when the direction changes, so a runner
+// standing still gets no new readings: the last one stays good until the app
+// goes to the background (when readings stop and may be out of date).
 const compass = { on: false, deg: null, at: 0 };
 function currentHeading() {
   const f = gps.fix;
   if (f && f.heading != null && f.speed != null && f.speed >= CONFIG.headingMinSpeedMs) return { deg: f.heading, src: 'GPS' };
-  if (compass.on && compass.deg != null && Date.now() - compass.at < 3000) return { deg: compass.deg, src: 'compass' };
+  if (compass.on && compass.deg != null) return { deg: compass.deg, src: 'compass' };
   return null;
 }
 
@@ -294,7 +296,7 @@ function renderDetails() {
     rows.push(['Reading time', new Date(f.t).toLocaleTimeString()], ['Reading age', fmtAge(freshness(f).age)],
       ['Latitude', f.lat.toFixed(6)], ['Longitude', f.lon.toFixed(6)], ['Accuracy', `±${Math.round(f.acc)} m`],
       ['Altitude', f.alt != null ? `${Math.round(f.alt)} m${f.altAcc != null ? ` (±${Math.round(f.altAcc)} m)` : ''}` : 'Not available'],
-      ['Heading', h ? `${Math.round(h.deg)}° from ${h.src}` : 'Not available (shown only when moving, or with compass on)'],
+      ['Heading', h ? `${Math.round(h.deg)}° from ${h.src}` : 'Not available yet (from GPS when moving, or the compass)'],
       ['Speed', f.speed != null ? `${(f.speed * 3.6).toFixed(1)} km/h` : 'Not available'],
       ['On the map', raceBounds.contains([f.lat, f.lon]) ? 'Yes' : 'No']);
   }
@@ -317,25 +319,53 @@ function updateMarker() {
     : poor ? { color: '#b45309', dashArray: '8 6', fillOpacity: 0.12 } : { color: '#1565c0', dashArray: null, fillOpacity: 0.12 });
 }
 
-// Compass (optional). iPhone asks permission; Android gives it freely.
+// Compass: always on. It is listened to from the start. Phones that must be
+// asked (iPhone, and newer Chrome) are asked straight away, which Chrome
+// allows; iPhone only allows it from a tap, and again each time the app is
+// opened, so there the first tap anywhere asks (the box shows once).
 function onOrient(e) {
   let h = null;
   if (typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;
   else if (e.absolute && e.alpha != null) h = (360 - e.alpha + ((screen.orientation && screen.orientation.angle) || 0)) % 360;
-  if (h != null) { compass.deg = h; compass.at = Date.now(); }
+  if (h == null) return;
+  if (!compass.at) document.removeEventListener('click', askOnTap, true);
+  compass.deg = h; compass.at = Date.now(); renderCompass();
 }
-async function setCompass(on, fromUser) {
-  if (on && fromUser && typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-    try {
-      if (await DeviceOrientationEvent.requestPermission() !== 'granted') throw new Error('denied');
-    } catch { toast('Compass permission was not given.'); on = false; }
-  }
+const needsAsking = () => typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function';
+function listenCompass() {
   window.removeEventListener('deviceorientationabsolute', onOrient);
   window.removeEventListener('deviceorientation', onOrient);
-  if (on) { window.addEventListener('deviceorientationabsolute', onOrient); window.addEventListener('deviceorientation', onOrient); }
-  compass.on = on; $('compassToggle').checked = on; pref('compass', on ? '1' : '0');
+  window.addEventListener('deviceorientationabsolute', onOrient);
+  window.addEventListener('deviceorientation', onOrient);
+  compass.on = true;
 }
-$('compassToggle').onchange = e => setCompass(e.target.checked, true);
+async function askCompass() {
+  if (!needsAsking()) return;
+  try {
+    compass.denied = (await DeviceOrientationEvent.requestPermission()) !== 'granted';
+    if (!compass.denied) listenCompass();
+  } catch { /* not from a tap: the next tap asks */ }
+  renderCompass();
+}
+function askOnTap() { if (!compass.denied && !compass.at) askCompass(); }
+function startCompass() {
+  listenCompass();
+  if (needsAsking()) { askCompass(); document.addEventListener('click', askOnTap, true); }
+}
+// Out of sight, readings stop: forget the last one (the runner may have turned)
+// and listen afresh on return, as some phones stop sending until then.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { compass.deg = null; return; }
+  if (compass.on) listenCompass();
+});
+function renderCompass() {
+  const el = document.getElementById('compassText');
+  if (!el) return;
+  el.textContent = compass.deg != null ? `Working: facing ${Math.round(compass.deg)}° ${compassPoint(compass.deg)}`
+    : compass.denied ? 'Not allowed. To allow it: close the app fully, open it again and tap Allow when asked.'
+    : needsAsking() && !compass.at ? 'Tap anywhere on the map to turn it on.'
+    : compass.at ? 'Move the phone to wake it.' : 'Not found on this phone: direction is shown only while moving.';
+}
 
 // =====================================================================
 // Local database (IndexedDB): recordings survive restarts and crashes
@@ -1337,7 +1367,7 @@ const setup = {
       <button class="btn secondary" id="suNext">Next</button>`;
   },
   wire_location() {
-    $('suGpsBtn').onclick = () => startGps();
+    $('suGpsBtn').onclick = () => { startGps(); askCompass(); };
     $('suNext').onclick = () => this.go('alerts');
     this.tick();
   },
@@ -1470,7 +1500,7 @@ $('medBody').addEventListener('click', e => {
 });
 
 function openSheet() {
-  renderTracks(); refreshOfflineStatus();
+  renderTracks(); refreshOfflineStatus(); renderCompass();
   $('sheetBg').style.display = 'block'; requestAnimationFrame(() => $('sheet').classList.add('open'));
 }
 function closeSheet() { $('sheet').classList.remove('open'); setTimeout(() => ($('sheetBg').style.display = 'none'), 200); }
@@ -1499,7 +1529,7 @@ if (profile.setupDone && profile.raceId) {
 if (['turaco2026', 'contours2+turaco2026'].includes(pref('tilesSaved'))) { pref('tilesSaved:nyanga', MAPS.nyanga.tag); try { localStorage.removeItem('tilesSaved'); } catch {} }
 removeOldTiles();
 refreshOfflineStatus();
-if (pref('compass') === '1') setCompass(true, false);
+startCompass();
 if (pref('debug') === '1') { $('debugToggle').checked = true; $('debugToggle').onchange({ target: $('debugToggle') }); }
 if (pref('gpsOn') === '1') startGps();
 renderGps();

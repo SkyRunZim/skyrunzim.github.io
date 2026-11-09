@@ -87,7 +87,7 @@
   .btn:disabled { opacity: .6; }
   .progress { height: 8px; border-radius: 4px; background: #eceae3; overflow: hidden; margin: 6px 0; display: none; }
   .progress > div { height: 100%; width: 0; background: var(--green); transition: width .2s; }
-  label.toggle { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; gap: 12px; }
+  .toggle { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; gap: 12px; }
   label.toggle input { width: 22px; height: 22px; flex: none; }
   .note { background: #fff8e1; border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-top: 14px; }
   .credits { font-size: 11px; color: var(--muted); margin-top: 14px; }
@@ -341,7 +341,7 @@
 
   <h3>Settings</h3>
   <label class="toggle"><span>Keep screen on</span><input type="checkbox" id="wakeToggle"></label>
-  <label class="toggle"><span>Use phone compass for heading when standing still</span><input type="checkbox" id="compassToggle"></label>
+  <div class="toggle"><span>Compass (direction when standing still)</span><span class="small" id="compassText"></span></div>
   <label class="toggle"><span>Debug information</span><input type="checkbox" id="debugToggle"></label>
 
   <div class="note"><b>Safety:</b> this is a navigation aid only. GPS is never perfectly accurate: check the ± figure and the status badge. Follow the race markings and marshals, and carry the mandatory kit. This app cannot send messages or call for help. Phones can run flat, get wet or lose GPS in deep valleys.</div>

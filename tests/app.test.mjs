@@ -136,6 +136,26 @@ try {
   }
 
   // ------------------------------------------------------------------
+  // Compass: on without being asked, and the direction stays while standing still
+  {
+    const { ctx, page, errors } = await newPage({ permissions: ['geolocation'], geolocation: { ...EDDY, accuracy: 8 } });
+    await page.goto(URL);
+    await page.waitForFunction(() => course && course.info);
+    await fakeFix(page, { latitude: EDDY.latitude, longitude: EDDY.longitude, speed: 0 });
+    // A phone sends one reading, then nothing (it is held still).
+    await page.evaluate(() => window.dispatchEvent(Object.assign(new Event('deviceorientationabsolute'), { absolute: true, alpha: 270 })));
+    await page.waitForTimeout(5000);
+    const h = await page.evaluate(() => currentHeading());
+    check('Compass is on without being switched on', await page.evaluate(() => compass.on));
+    check('Standing still 5 s after the last reading: direction still shown', !!h && h.src === 'compass' && Math.round(h.deg) === 90 &&
+      await page.locator('.me.has-heading').count() === 1, JSON.stringify(h));
+    await page.click('#menuBtn'); await page.waitForTimeout(300);
+    check('The menu says the compass is working, with no switch to turn it off', (await text(page, '#compassText')).includes('Working: facing 90° E') && !(await page.locator('#compassToggle').count()));
+    check('No errors (compass)', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  }
+
+  // ------------------------------------------------------------------
   // Set up before the indemnity form was in the app: asked for it on opening, no way round it
   {
     const { ctx, page, errors } = await newPage({ fresh: true });
@@ -214,7 +234,7 @@ try {
     check('Ready screen says notifications are off', ready.includes('Notifications off'));
     check('Ready screen says the indemnity form is accepted', ready.includes('Indemnity form accepted'));
     check('Ready screen summarises name, bib, race, map and location',
-      ready.includes('Tendai Moyo, bib 142') && ready.includes('Race: The Challenge') && ready.includes('Map NOT saved') && ready.includes('Location working'));
+      ready.includes('Tendai Moyo, bib 142') && ready.includes('Race: The Challenge') && ready.includes('Map NOT saved') && ready.includes('Location working'), ready.replace(/\n/g, ' | '));
     await shot(page, '9-setup-ready');
     await page.click('#suDone');
     await page.waitForFunction(() => course && course.info && course.info.id === 'the-challenge');
