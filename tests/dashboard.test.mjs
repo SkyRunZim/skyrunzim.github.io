@@ -97,7 +97,7 @@ try {
     Object.defineProperty(db, 'functions', { value: { invoke: async () => ({ data: { sent: 3, failed: 0, phones: 3 }, error: null }) } });
     await loadRaces();
     $('login').hidden = true; $('app').hidden = false; document.querySelector('.tabs').hidden = false;
-    runners = []; renderAll(); await loadRoutes(); show('races');
+    phones = []; renderAll(); await loadRoutes(); show('races');
   });
   check('Race settings lists every race', await page.locator('.racecard').count() === 6);
 
@@ -190,7 +190,7 @@ try {
       window.__rpc = [];
       db.rpc = async (fn, args) => { window.__rpc.push({ fn, args }); return { data: args.p_rows.length, error: null }; };
       const t0 = new Date(Date.now() - 3600e3).toISOString();
-      runners = [
+      phones = [
         { device_id: 'd1', name: 'ann smith', bib: '115', race_id: 'the-challenge', setup_done: true, map_saved: true, location_ok: true, indemnity_at: t0, first_seen: t0, last_seen: t0 },
         { device_id: 'd2', name: 'Ben Jones', bib: '116', race_id: 'the-ultra', setup_done: true, map_saved: false, location_ok: true, first_seen: t0, last_seen: t0 },
         { device_id: 'd3', name: 'Someone Else', bib: '', race_id: 'the-epic', setup_done: true, map_saved: true, location_ok: true, indemnity_at: t0, first_seen: t0, last_seen: t0 },
@@ -223,6 +223,63 @@ try {
     const rt = await page.locator('#tbody').innerText();
     check('Runners tab flags start-list and indemnity problems', rt.includes('Not on the start list') && rt.includes('Different race on the start list') && rt.includes('Indemnity not accepted'), rt.replace(/\n/g, ' | '));
     check('Overview counts runners against the start list', (await page.locator('#kpis').innerText()).includes('2/4'), await page.locator('#kpis').innerText());
+  }
+
+  // ------------------------------------------------------------------
+  // The same person signing in several times is shown and counted once.
+  {
+    const counts = await page.evaluate(() => {
+      window.__startList = []; startList = [];
+      const t = h => new Date(Date.now() - h * 3600e3).toISOString();
+      const reg = (id, name, bib, race, s, m, l, seen, extra = {}) => ({ device_id: id, name, bib, race_id: race, setup_done: s, map_saved: m, location_ok: l,
+        app_version: 'v21', phone: 'iPhone', first_seen: t(48), last_seen: t(seen), indemnity_at: s ? t(40) : null, ...extra });
+      phones = [
+        // Five sign-ins by one runner, as seen on the live dashboard.
+        reg('j1', 'Jane Doe', '363', 'harare-prep', true, true, false, 30, { app_version: 'v20' }),
+        reg('j2', 'Jane Doe', '363', 'mutarazi-traverse', true, true, false, 20),
+        reg('j3', 'Jane Doe', '363', 'mutarazi-traverse', true, true, true, 10),
+        reg('j4', 'jane  DOE', '363', 'mutarazi-traverse', true, true, true, 2),
+        reg('j5', 'Jane Doe', '363', '', false, false, false, 1),
+        // A middle name typed once, and a copy with no race number: still her.
+        reg('j6', 'Jane Mary Doe', '363', 'mutarazi-traverse', false, false, false, 5),
+        reg('j7', 'Jane Doe', '', '', false, false, false, 6),
+        // Someone else who typed her number by mistake: a real problem.
+        reg('x1', 'Peter Smith', '363', 'the-challenge', true, true, true, 3),
+        // Different numbers are never joined, even with the same name.
+        reg('k1', 'Sam Lee', '10', 'the-challenge', true, true, true, 4),
+        reg('k2', 'Sam Lee', '11', 'the-ultra', true, true, true, 4),
+      ];
+      pushIds = new Set(['j1']);
+      reads = [{ message_id: 1, device_id: 'j1' }, { message_id: 1, device_id: 'j4' }, { message_id: 1, device_id: 'k1' }];
+      messages = [{ id: 1, created_at: t(1), race_id: null, body: 'Briefing at 17:00' }];
+      state.q = ''; state.issue = null; state.chip = 'all';
+      renderAll(); show('runners');
+      return { people: runners.length, jane: runners.filter(r => r.name.toLowerCase().includes('jane')).map(r => ({ id: r.device_id, n: r.others.length + 1, race: r.race_id })) };
+    });
+    check('Seven sign-ins by one runner become one person', counts.people === 4 && counts.jane.length === 1 && counts.jane[0].n === 7, JSON.stringify(counts));
+    check('Her row uses her best-set-up sign-in (most recent if equal)', counts.jane[0].id === 'j4' && counts.jane[0].race === 'mutarazi-traverse', JSON.stringify(counts.jane));
+    const kpis = await page.evaluate(() => { show('overview'); return $('kpis').innerText; });
+    check('Totals count her once', /Signed in to the app\s*4\b/i.test(kpis) && kpis.includes('4/4'), kpis.replace(/\n/g, ' | '));
+    await page.evaluate(() => show('runners'));
+    const rows = await page.locator('#tbody tr').count();
+    const janeRow = await page.locator('#tbody tr', { hasText: 'Jane' }).first().innerText();
+    check('One row for her, tagged with how many times she signed in', rows === 4 && janeRow.includes('7 sign-ins'), janeRow.replace(/\s+/g, ' '));
+    const twice = await page.evaluate(() => runners.filter(ISSUES[0][3]).map(r => r.name));
+    check('"Bib used twice" now means two different people (her and Peter), not her own sign-ins', twice.length === 2 && twice.includes('Peter Smith'), JSON.stringify(twice));
+    check('Notifications on any of her sign-ins count for her', janeRow.includes('✓ Yes') && !janeRow.includes('Notifications off'), janeRow.replace(/\s+/g, ' '));
+    const peter = await page.locator('#tbody tr', { hasText: 'Peter Smith' }).innerText();
+    check('A different person on the same number is still flagged', peter.includes('Bib used twice'), peter.replace(/\s+/g, ' '));
+    check('Different race numbers are not joined', await page.locator('#tbody tr', { hasText: 'Sam Lee' }).count() === 2);
+    check('The table says how many extra sign-ins were folded in', (await page.locator('#rcount').innerText()).includes('6 extra sign-ins'), await page.locator('#rcount').innerText());
+    await page.click('[data-person="j4"]');
+    check('Tapping the tag shows her other sign-ins, marked as not counted', await page.locator('#tbody tr.sub').count() === 6 && (await page.locator('#tbody tr.sub').first().innerText()).includes('Not counted'));
+    await page.click('[data-person="j4"]');
+    check('Tapping again hides them', await page.locator('#tbody tr.sub').count() === 0);
+    await page.fill('#q', 'jane mary');
+    check('Search finds her by a name typed on another sign-in', await page.locator('#tbody tr').count() === 1);
+    await page.fill('#q', '');
+    const msg = await page.evaluate(() => { show('messages'); return $('msgList').innerText; });
+    check('A message read on two of her sign-ins counts once', msg.includes('read by 2 of 4'), msg.replace(/\n/g, ' | '));
   }
   check('No page errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

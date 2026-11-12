@@ -144,6 +144,10 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
 .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; }
 .pill.ok { background: var(--ok-bg); color: var(--ok); } .pill.warn { background: var(--warn-bg); color: var(--warn); } .pill.bad { background: var(--bad-bg); color: var(--bad); } .pill.off { background: var(--bg); color: var(--fg-3); border: 1px solid var(--line); }
 .flag { font-size: 12px; color: var(--warn); font-weight: 600; }
+.phones { margin-left: 6px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg); color: var(--fg-2, var(--fg)); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.phones:hover { border-color: var(--fg-3); }
+tr.sub td { background: var(--bg); color: var(--fg-3); font-size: 13px; }
+tr.sub td.bib { font-size: 14px; }
 .foot { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; color: var(--fg-3); font-size: 13px; margin-top: 8px; }
 
 /* Messages */
@@ -414,7 +418,51 @@ const hoursSince = t => (Date.now() - new Date(t)) / 36e5;
 const verNum = v => +((String(v || '').match(/\d+/) || [0])[0]);
 const ready = r => r.setup_done && r.map_saved && r.location_ok;
 let latestApp = '', dupBibs = new Set(), pushIds = null;
+
+// ---- One row per person ----
+// A runner who sets up the app more than once (in Safari and again from the
+// home-screen icon on an iPhone, after a reinstall, or on a second phone)
+// sends a registration from each copy. Copies with the same race number and
+// the same name (middle names and capitals aside), or with exactly the same
+// name where a race number is missing, are one person: shown and counted
+// once, using their best-set-up copy (the most recently seen if equal). The
+// other copies are listed under them. Different race numbers are never joined.
+let phones = [];                 // every registration, as stored
+const owner = new Map();         // device_id -> the device_id of the row it is shown under
+const plainName = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+function sameName(a, b) {
+  const x = plainName(a), y = plainName(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const p = x.split(' '), q = y.split(' ');
+  return p.length > 1 && q.length > 1 && p[0] === q[0] && p[p.length - 1] === q[q.length - 1];
+}
+const bibKey = r => String(r.bib || '').trim().toLowerCase();
+const setupScore = r => (r.setup_done ? 4 : 0) + (r.map_saved ? 2 : 0) + (r.location_ok ? 1 : 0);
+function consolidate(list) {
+  const best = [...list].sort((a, b) => setupScore(b) - setupScore(a) || new Date(b.last_seen) - new Date(a.last_seen));
+  const groups = [];
+  for (const r of best) {
+    const b = bibKey(r);
+    const g = groups.find(g => (b && g.bib ? b === g.bib && sameName(g.list[0].name, r.name)
+      : plainName(r.name) !== '' && plainName(g.list[0].name) === plainName(r.name)));
+    if (g) { g.list.push(r); g.bib ||= b; } else groups.push({ bib: b, list: [r] });
+  }
+  owner.clear();
+  return groups.map(({ list }) => {
+    const [top, ...others] = list;
+    list.forEach(r => owner.set(r.device_id, top.device_id));
+    const accepted = list.map(r => r.indemnity_at).filter(Boolean).sort();
+    return { ...top, bib: top.bib || (others.find(r => r.bib) || {}).bib || '', others,
+      first_seen: list.map(r => r.first_seen).sort()[0], last_seen: list.map(r => r.last_seen).sort().pop(),
+      indemnity_at: top.indemnity_at || accepted[0] || null };
+  });
+}
+// Notifications are on for a person if any of their copies has them on.
+const hasPush = r => !!pushIds && [r, ...(r.others || [])].some(x => pushIds.has(x.device_id));
+
 function derive() {
+  runners = consolidate(phones);
   latestApp = runners.reduce((m, r) => (verNum(r.app_version) > verNum(m) ? r.app_version : m), '');
   const c = {};
   runners.forEach(r => { if (r.bib) c[r.bib] = (c[r.bib] || 0) + 1; });
@@ -431,7 +479,7 @@ function problems(r) {
   if (!r.bib) p.push('No bib number');
   if (r.app_version && verNum(r.app_version) < verNum(latestApp)) p.push('Old app version');
   if (hoursSince(r.last_seen) > 72) p.push('Not seen for 3+ days');
-  if (pushIds && !pushIds.has(r.device_id)) p.push('Notifications off');
+  if (pushIds && !hasPush(r)) p.push('Notifications off');
   if (!r.indemnity_at) p.push('Indemnity not accepted');
   if (onList()) { const m = slMatch.get(r.device_id); if (!m) p.push('Not on the start list'); else if (m.entry.race_id !== r.race_id) p.push('Different race on the start list'); }
   return p;
@@ -447,7 +495,7 @@ const ISSUES = [
   ['info', 'No bib number', 'Did not enter a bib number in the app', r => !r.bib],
   ['info', 'Old app version', 'Need to open the app on wifi and tap Update now', r => r.app_version && verNum(r.app_version) < verNum(latestApp)],
   ['info', 'Not seen for 3+ days', 'Have not opened the app recently', r => hoursSince(r.last_seen) > 72],
-  ['info', 'Notifications off', 'Will only see messages when they open the app. Ask them to tap Menu > Turn on notifications', r => pushIds && !pushIds.has(r.device_id)],
+  ['info', 'Notifications off', 'Will only see messages when they open the app. Ask them to tap Menu > Turn on notifications', r => pushIds && !hasPush(r)],
 ];
 
 // ---- Overview ----
@@ -547,7 +595,7 @@ function statusOf(r) {
 function filtered() {
   const list = runners.filter(r => {
     if (state.race && r.race_id !== state.race) return false;
-    if (state.q && !(`${r.bib || ''} ${r.name}`.toLowerCase().includes(state.q))) return false;
+    if (state.q && ![r, ...r.others].some(x => `${x.bib || ''} ${x.name}`.toLowerCase().includes(state.q))) return false;
     if (state.issue != null && !ISSUES[state.issue][3](r)) return false;
     if (state.chip === 'ready') return ready(r) && !problems(r).length;
     if (state.chip === 'notready') return !ready(r);
@@ -555,32 +603,49 @@ function filtered() {
     return true;
   });
   const keys = { bib: r => (isNaN(+r.bib) ? r.bib || '' : +r.bib), name: r => r.name.toLowerCase(), race: r => raceName(r.race_id), setup: r => r.setup_done, map: r => r.map_saved,
-    loc: r => r.location_ok, push: r => !!(pushIds && pushIds.has(r.device_id)), indem: r => r.indemnity_at || '', app: r => verNum(r.app_version), phone: r => r.phone || '', first: r => r.first_seen, seen: r => -new Date(r.last_seen), status: r => statusOf(r)[1] };
+    loc: r => r.location_ok, push: r => hasPush(r), indem: r => r.indemnity_at || '', app: r => verNum(r.app_version), phone: r => r.phone || '', first: r => r.first_seen, seen: r => -new Date(r.last_seen), status: r => statusOf(r)[1] };
   const key = keys[state.sort];
   return list.sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * state.dir);
 }
+const openPeople = new Set();   // rows whose other copies are shown
 function renderTable() {
   const list = filtered();
-  $('rcount').textContent = `${list.length} of ${runners.length} runners` + (state.issue != null ? ` · ${ISSUES[state.issue][1]}` : '');
+  const extra = phones.length - runners.length;
+  $('rcount').textContent = `${list.length} of ${runners.length} runners` + (state.issue != null ? ` · ${ISSUES[state.issue][1]}` : '') +
+    (extra ? ` · ${extra} extra sign-in${extra === 1 ? '' : 's'} from the same people, shown under their name` : '');
+  const app = r => { const old = r.app_version && verNum(r.app_version) < verNum(latestApp); return r.app_version ? (old ? `<span class="n">${esc(r.app_version)}</span>` : esc(r.app_version)) : '<span class="q">–</span>'; };
   $('tbody').innerHTML = list.map(r => {
-    const [cls, label] = statusOf(r), p = problems(r);
-    const old = r.app_version && verNum(r.app_version) < verNum(latestApp);
-    return `<tr><td class="bib num">${esc(r.bib) || '<span class="q">–</span>'}</td><td>${esc(r.name)}${p.length ? `<div class="flag">${esc(p.join(' · '))}</div>` : ''}</td>
-      <td>${esc(raceName(r.race_id))}</td><td>${yn(r.setup_done)}</td><td>${yn(r.map_saved, r.setup_done)}</td><td>${yn(r.location_ok, r.setup_done)}</td><td>${yn(pushIds && pushIds.has(r.device_id), !!pushIds)}</td><td>${r.indemnity_at ? `<span class="y">✓ ${dateText(r.indemnity_at)}</span>` : '<span class="n">✕ No</span>'}</td>
-      <td>${r.app_version ? (old ? `<span class="n">${esc(r.app_version)}</span>` : esc(r.app_version)) : '<span class="q">–</span>'}</td><td>${esc(r.phone) || '<span class="q">–</span>'}</td>
+    const [cls, label] = statusOf(r), p = problems(r), n = r.others.length + 1, open = openPeople.has(r.device_id);
+    const tag = n > 1 ? ` <button class="phones" data-person="${esc(r.device_id)}" aria-expanded="${open}" data-tip="Signed in ${n} times (another browser, a reinstall or another phone). Shown once, using the best-set-up copy. Tap to see the others.">${n} sign-ins ${open ? '▴' : '▾'}</button>` : '';
+    const main = `<tr><td class="bib num">${esc(r.bib) || '<span class="q">–</span>'}</td><td>${esc(r.name)}${tag}${p.length ? `<div class="flag">${esc(p.join(' · '))}</div>` : ''}</td>
+      <td>${esc(raceName(r.race_id))}</td><td>${yn(r.setup_done)}</td><td>${yn(r.map_saved, r.setup_done)}</td><td>${yn(r.location_ok, r.setup_done)}</td><td>${yn(hasPush(r), !!pushIds)}</td><td>${r.indemnity_at ? `<span class="y">✓ ${dateText(r.indemnity_at)}</span>` : '<span class="n">✕ No</span>'}</td>
+      <td>${app(r)}</td><td>${esc(r.phone) || '<span class="q">–</span>'}</td>
       <td class="num">${dateText(r.first_seen)}</td><td class="num">${seenText(r.last_seen)}</td><td><span class="pill ${cls}">${label}</span></td></tr>`;
+    // The other copies: as they are, for checking; they are not counted.
+    const subs = open ? r.others.map(o => `<tr class="sub"><td class="bib num">${esc(o.bib) || '<span class="q">–</span>'}</td><td>${esc(o.name)}<div class="q">Other sign-in, not counted</div></td>
+      <td>${esc(raceName(o.race_id))}</td><td>${yn(o.setup_done)}</td><td>${yn(o.map_saved, o.setup_done)}</td><td>${yn(o.location_ok, o.setup_done)}</td><td>${yn(!!pushIds && pushIds.has(o.device_id), !!pushIds)}</td><td>${o.indemnity_at ? `<span class="y">✓ ${dateText(o.indemnity_at)}</span>` : '<span class="n">✕ No</span>'}</td>
+      <td>${app(o)}</td><td>${esc(o.phone) || '<span class="q">–</span>'}</td>
+      <td class="num">${dateText(o.first_seen)}</td><td class="num">${seenText(o.last_seen)}</td><td><span class="pill off">Not counted</span></td></tr>`).join('') : '';
+    return main + subs;
   }).join('') || `<tr><td colspan="13" class="q">${runners.length ? 'No runners match these filters.' : 'No runners have signed in yet.'}</td></tr>`;
   document.querySelectorAll('[data-chip]').forEach(b => b.setAttribute('aria-pressed', b.dataset.chip === state.chip && state.issue == null));
   document.querySelectorAll('#thead th').forEach(th => (th.textContent = COLS.find(c => c[0] === th.dataset.sort)[1] + (th.dataset.sort === state.sort ? (state.dir > 0 ? ' ▲' : ' ▼') : '')));
 }
+$('tbody').addEventListener('click', e => {
+  const b = e.target.closest('[data-person]');
+  if (!b) return;
+  const id = b.dataset.person;
+  if (!openPeople.delete(id)) openPeople.add(id);
+  renderTable();
+});
 $('q').addEventListener('input', e => { state.q = e.target.value.trim().toLowerCase(); renderTable(); });
 $('raceSel').addEventListener('change', e => { state.race = e.target.value; renderTable(); });
 $('chips').addEventListener('click', e => { const b = e.target.closest('[data-chip]'); if (b) { state.chip = b.dataset.chip; state.issue = null; renderTable(); } });
 $('thead').addEventListener('click', e => { const th = e.target.closest('th'); if (!th) return; state.dir = state.sort === th.dataset.sort ? -state.dir : 1; state.sort = th.dataset.sort; renderTable(); });
 $('copyCsv').addEventListener('click', () => {
-  const rows = [['Bib', 'Name', 'Race', 'Setup finished', 'Map saved', 'Location', 'Notifications', 'Indemnity accepted', 'App', 'Phone', 'Signed in', 'Last seen', 'Status', 'Problems']]
-    .concat(filtered().map(r => [r.bib || '', r.name, raceName(r.race_id), r.setup_done, r.map_saved, r.location_ok, !!(pushIds && pushIds.has(r.device_id)), r.indemnity_at ? new Date(r.indemnity_at).toLocaleString('en-GB') : '', r.app_version || '', r.phone || '',
-      new Date(r.first_seen).toLocaleString('en-GB'), new Date(r.last_seen).toLocaleString('en-GB'), statusOf(r)[1], problems(r).join('; ')]));
+  const rows = [['Bib', 'Name', 'Race', 'Setup finished', 'Map saved', 'Location', 'Notifications', 'Indemnity accepted', 'App', 'Phone', 'Signed in', 'Last seen', 'Status', 'Problems', 'Times signed in']]
+    .concat(filtered().map(r => [r.bib || '', r.name, raceName(r.race_id), r.setup_done, r.map_saved, r.location_ok, hasPush(r), r.indemnity_at ? new Date(r.indemnity_at).toLocaleString('en-GB') : '', r.app_version || '', r.phone || '',
+      new Date(r.first_seen).toLocaleString('en-GB'), new Date(r.last_seen).toLocaleString('en-GB'), statusOf(r)[1], problems(r).join('; '), r.others.length + 1]));
   copy(rows.map(r => r.map(c => String(c).replace(/[\t\n]/g, ' ')).join('\t')).join('\n'), `${rows.length - 1} rows. Paste into Excel`);
 });
 
@@ -715,7 +780,7 @@ function fillTo() {
 async function loadMsgs() {
   const [m, r] = await Promise.all([
     db.from('messages').select('*').order('created_at', { ascending: false }),
-    db.from('message_reads').select('message_id'),
+    db.from('message_reads').select('message_id, device_id'),
   ]);
   if (m.error) { $('msgList').innerHTML = `<p class="notice">Messages are not set up yet (${esc(m.error.message)}). Run the latest supabase/schema.sql.</p>`; return; }
   messages = m.data; reads = r.data || [];
@@ -723,7 +788,8 @@ async function loadMsgs() {
 }
 function renderMsgs() {
   if (!messages.length) { $('msgList').innerHTML = '<b>Sent</b><p class="notice">No messages sent yet.</p>'; return; }
-  const readBy = id => reads.filter(x => x.message_id === id).length;
+  // A person who read it on two of their sign-ins counts once.
+  const readBy = id => new Set(reads.filter(x => x.message_id === id).map(x => owner.get(x.device_id) || x.device_id)).size;
   const audience = m => (m.race_id ? runners.filter(r => r.race_id === m.race_id).length : runners.length);
   $('msgList').innerHTML = '<b>Sent</b>' + messages.map(m => `<div class="msg"><div class="meta">${esc(m.race_id ? raceName(m.race_id) + ' runners' : 'All runners')} ·
     ${esc(new Date(m.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))} ·
@@ -1091,15 +1157,15 @@ async function loadAll() {
   // Which phones have notifications on (null until that part of the database is set up).
   const p = await db.from('push_subscriptions').select('device_id');
   pushIds = p.error ? null : new Set(p.data.map(x => x.device_id));
-  runners = data; lastLoad = new Date(); renderAll(); renderSync();
+  phones = data; lastLoad = new Date(); renderAll(); renderSync();
 }
 function goLive() {
   if (channel) return;
   channel = db.channel('race-control')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'registrations' }, ({ eventType, new: row, old }) => {
       const id = (row && row.device_id) || (old && old.device_id);
-      runners = runners.filter(r => r.device_id !== id);
-      if (eventType !== 'DELETE') runners.push(row);
+      phones = phones.filter(r => r.device_id !== id);
+      if (eventType !== 'DELETE') phones.push(row);
       lastLoad = new Date(); renderAll(); renderSync();
     })
     .subscribe(status => { live = status === 'SUBSCRIBED'; renderSync(); });
