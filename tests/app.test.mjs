@@ -215,8 +215,7 @@ try {
     const ready0 = await text(page, '#raceCards');
     await shot(page, '8-setup-race');
     check('Race list shows The Challenge', (await text(page, '#raceCards')).includes('The Challenge') && (await text(page, '#raceCards')).includes('28.6 km'), await text(page, '#raceCards'));
-    check('Race list offers the six races plus Harare Prep', await page.locator('.racecard').count() === 7 && ['The Mutarazi Traverse', 'The Ultra', 'Back2Back', 'The Epic', 'The GOAT', 'Harare Prep'].every(n => ready0.includes(n)), ready0);
-    check('Harare Prep is marked as a practice run', (await text(page, '.racecard[data-id="harare-prep"]')).includes('Practice run · Harare'));
+    check('Race list offers the six races, and no Harare Prep', await page.locator('.racecard').count() === 6 && ['The Mutarazi Traverse', 'The Ultra', 'Back2Back', 'The Epic', 'The GOAT'].every(n => ready0.includes(n)) && !ready0.includes('Harare'), ready0);
     check('Back2Back card lists both days', ready0.includes('2 days') && ready0.includes('Day 1: The Mutarazi Traverse: 29.6 km') && ready0.includes('Day 2: The Challenge: 28.6 km'));
     check('Cannot continue before choosing a race', await page.locator('#suConfirm').isDisabled());
     await page.click('.racecard[data-id="the-challenge"]');
@@ -556,45 +555,26 @@ try {
   await ctx.setOffline(false);
 
   // ------------------------------------------------------------------
-  // Harare Prep: its own map, downloaded alongside the Nyanga map (both kept)
-  await page.evaluate(() => openSheet()); await page.waitForTimeout(300);
-  await page.click('#changeRaceBtn');
-  await page.waitForSelector('.racecard');
-  await page.click('.racecard[data-id="harare-prep"]');
-  await page.click('#suConfirm');
-  await page.waitForSelector('#suDl');
-  check('Changing to Harare Prep asks to save the Harare map', (await text(page, '#setupBody')).includes('Harare practice map'));
-  await page.click('#suDl');
-  await page.waitForFunction(() => document.getElementById('suNext') && !document.getElementById('suNext').hidden, null, { timeout: 180000 });
-  await page.click('#suNext');
-  await page.waitForFunction(() => course && course.info && course.info.id === 'harare-prep' && !document.querySelector('#raceChip .spin'));
-  check('Harare Prep shown on the Harare map', (await text(page, '#raceChip')) === 'Harare Prep · 10.8 km' &&
-    await page.evaluate(() => activeMap === 'harare' && raceLayer._url.includes('tiles-harare')), await text(page, '#raceChip'));
-  const both = await page.evaluate(async () => {
-    const c = await caches.open(TILE_CACHE), keys = (await c.keys()).map(r => r.url);
-    return { nyanga: mapSaved('nyanga'), harare: mapSaved('harare'),
-      nyangaPieces: keys.filter(k => k.includes('/tiles-turaco26/')).length, hararePieces: keys.filter(k => k.includes('/tiles-harare/')).length };
+  // Harare Prep was taken out (v21). A phone that had chosen it is asked to
+  // choose its race again, and the saved Harare map is removed to free space.
+  await page.evaluate(async () => {
+    const p = JSON.parse(localStorage.getItem('profile')); p.raceId = 'harare-prep'; localStorage.setItem('profile', JSON.stringify(p));
+    localStorage.setItem('activeMap', 'harare'); localStorage.setItem('tilesSaved:harare', 'harare1'); localStorage.removeItem('tilesCleaned');
+    await (await caches.open(TILE_CACHE)).put(new URL('tiles-harare/11/1199/1125.webp', location).href, new Response('x'));
   });
-  check('Both maps saved: downloading Harare kept every Nyanga piece', both.nyanga && both.harare && both.nyangaPieces === 4481 && both.hararePieces === 6623, JSON.stringify(both));
-  const hp = await page.evaluate(() => course.pts[3]);
-  await fakeFix(page, { latitude: hp[0], longitude: hp[1] });
-  check('Harare Prep: on your route, next practice checkpoint named', (await text(page, '#courseStatus')).includes('On your route') && (await text(page, '#courseNext')).includes('Practice water 1'),
-    `${await text(page, '#courseStatus')} | ${await text(page, '#courseNext')}`);
-  await ctx.setOffline(true);
   await page.reload();
-  await page.waitForFunction(() => course && course.info && course.info.id === 'harare-prep', null, { timeout: 10000 }).catch(() => {});
-  await page.evaluate(() => { map.setView([-17.805, 31.105], 16); });
-  await page.waitForTimeout(1500);
-  const ht = await page.evaluate(() => [...document.querySelectorAll('.leaflet-tile')].map(i => ({ ok: i.complete && i.naturalWidth > 0, h: i.src.includes('tiles-harare') })));
-  check('Offline: Harare map loads (most detailed zoom)', ht.filter(x => x.h && x.ok).length > 4 && !ht.some(x => x.h && !x.ok), `${ht.filter(x => x.h && x.ok).length} pieces`);
-  await page.evaluate(() => { map.setView([-17.62, 30.90], 15); });
-  await page.waitForTimeout(1500);
-  const outer = await page.evaluate(() => [...document.querySelectorAll('.leaflet-tile')].filter(i => i.complete && i.naturalWidth === 0).length);
-  check('Offline: outer Harare (beyond 15 km) loads too', outer === 0, `${outer} missing`);
-  await page.evaluate(() => fitArea(L.latLngBounds(course.pts.map(p => [p[0], p[1]]))));
-  await page.waitForTimeout(1500);
-  await shot(page, '12-harare-prep');
-  await ctx.setOffline(false);
+  await page.waitForSelector('#setup.open .racecard', { timeout: 10000 }).catch(() => {});
+  // (The old pieces are cleared in the background at start-up.)
+  await page.waitForFunction(async () => !(await (await caches.open(TILE_CACHE)).keys()).some(r => r.url.includes('/tiles-harare/')), null, { timeout: 15000 }).catch(() => {});
+  const gone = await page.evaluate(async () => ({ cards: document.querySelectorAll('.racecard').length, harare: !!document.querySelector('.racecard[data-id="harare-prep"]'),
+    map: activeMap, toast: document.getElementById('toast').textContent,
+    pieces: (await (await caches.open(TILE_CACHE)).keys()).filter(r => r.url.includes('/tiles-harare/')).length }));
+  check('A phone set up for Harare Prep is asked to choose its race again', gone.cards === 6 && !gone.harare && /no longer in the app/.test(gone.toast), JSON.stringify(gone));
+  check('Its saved Harare map is removed, and the Nyanga map is on show', gone.pieces === 0 && gone.map === 'nyanga', JSON.stringify(gone));
+  await page.click('.racecard[data-id="the-challenge"]');
+  await page.click('#suConfirm');
+  await page.waitForFunction(() => course && course.info && course.info.id === 'the-challenge', null, { timeout: 10000 }).catch(() => {});
+  check('Choosing a race again brings the route back', await page.evaluate(() => !!(course && course.info && course.info.id === 'the-challenge')));
 
   await page.evaluate(() => openSheet()); await page.waitForTimeout(300);
   await page.click('#dlDelete');

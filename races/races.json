@@ -56,15 +56,5 @@
     "version": 1,
     "start": "",
     "notes": "From The GOAT 2026.gpx. Southern start: the Mutarazi Traverse loop, north, the Epic's western loop, an extra eastern loop, then the Challenge route to the finish."
-  },
-  {
-    "id": "harare-prep",
-    "name": "Harare Prep",
-    "file": "harare-prep.gpx",
-    "version": 1,
-    "start": "",
-    "map": "harare",
-    "practice": true,
-    "notes": "Practice loop around Greendale and Highlands, made by tools/make-harare-route.mjs along OpenStreetMap streets. Lets runners get used to the app before race day."
   }
 ]

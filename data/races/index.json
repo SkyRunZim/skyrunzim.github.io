@@ -78,17 +78,5 @@
   "map": "nyanga",
   "checkpoints": 19,
   "file": "data/races/the-goat.json"
- },
- {
-  "id": "harare-prep",
-  "name": "Harare Prep",
-  "version": 1,
-  "start": "",
-  "distanceKm": 10.8,
-  "climbM": 127,
-  "map": "harare",
-  "practice": true,
-  "checkpoints": 3,
-  "file": "data/races/harare-prep.json"
  }
 ]

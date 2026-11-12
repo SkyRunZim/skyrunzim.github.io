@@ -335,7 +335,7 @@ td.bib { font-family: var(--display); font-weight: 700; font-size: 16px; }
   </section>
   <section class="view panel" id="view-course" hidden>
     <div class="head"><div><h2>Course map</h2><div class="sub">Every race on the official map, as runners have it now. Tick races to show them; tap a route for the distance and height at that point.</div></div>
-      <div class="chips"><button class="chip" data-cmap="nyanga" aria-pressed="true">Nyanga race map</button><button class="chip" data-cmap="harare" aria-pressed="false">Harare practice map</button></div></div>
+      </div>
     <div class="cmgrid" id="cmGrid">
       <div class="cmside">
         <div id="cmRaces"><p class="notice">Loading races…</p></div>
@@ -773,9 +773,6 @@ $('msgList').addEventListener('click', async e => {
 const MAPS = {   // as in the app (app.js MAPS)
   nyanga: { bbox: [[-18.523914235060392, 32.69659612566003], [-18.215629827297686, 32.992700072259964]],
     layers: [{ url: '../tiles-turaco26/{z}/{x}/{y}.webp', minNativeZoom: 11, maxNativeZoom: 16 }] },
-  harare: { bbox: [[-18.0763, 30.8219], [-17.5337, 31.3881]],
-    layers: [{ url: '../tiles-harare/{z}/{x}/{y}.webp', minNativeZoom: 11, maxNativeZoom: 15 },
-      { url: '../tiles-harare/{z}/{x}/{y}.webp', minZoom: 16, minNativeZoom: 16, maxNativeZoom: 16, bounds: [[-17.9407, 30.9635], [-17.6693, 31.2465]] }] },
 };
 let raceMeta = [], published = [], builder = null, heights;
 const lib = () => (builder ||= import('./route-build.mjs'));
@@ -957,7 +954,7 @@ $('rmPublish').addEventListener('click', async () => {
 });
 
 // ---- Course map: every race on the official map, each can be shown or hidden ----
-// In races.json order: Challenge, Mutarazi, Ultra, Back2Back, Epic, GOAT, Harare Prep.
+// In races.json order: Challenge, Mutarazi, Ultra, Back2Back, Epic, GOAT.
 const ROUTE_COLOURS = ['#d62728', '#1f5fd6', '#ff7f0e', '#8e24aa', '#00897b', '#212121', '#6d4c41', '#c2185b'];
 const courseMap = {
   map: null, mapId: 'nyanga', routes: {}, shown: null, layers: L.layerGroup(), base: [],

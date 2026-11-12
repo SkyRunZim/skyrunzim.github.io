@@ -1,6 +1,6 @@
 // SkyRunZim: offline race map with live GPS, run recording and course.
 // Keep APP_VERSION in step with SHELL in sw.js.
-const APP_VERSION = 'v20 (9 Nov 2026)';
+const APP_VERSION = 'v21 (12 Nov 2026)';
 // The indemnity text is data/indemnity.html. Change this when its wording
 // changes: every runner is then asked to accept the new one.
 const INDEMNITY_VERSION = '2026-1';
@@ -15,18 +15,9 @@ const MAPS = {
     layers: [{ url: 'tiles-turaco26/{z}/{x}/{y}.webp', minNativeZoom: 11, maxNativeZoom: 16 }],
     attribution: 'Race map © Far and Wide',
   },
-  harare: {
-    name: 'Harare practice map', tag: 'harare1', approxMB: 29, sets: ['tiles-harare'],
-    // 30 km around Greendale/Highlands, drawn from OpenStreetMap (tools/render-harare.mjs).
-    bbox: { south: -18.0763, north: -17.5337, west: 30.8219, east: 31.3881 },
-    layers: [
-      { url: 'tiles-harare/{z}/{x}/{y}.webp', minNativeZoom: 11, maxNativeZoom: 15 },
-      // The most detailed zoom only exists within 15 km of the hub.
-      { url: 'tiles-harare/{z}/{x}/{y}.webp', minZoom: 16, minNativeZoom: 16, maxNativeZoom: 16,
-        bbox: { south: -17.9407, north: -17.6693, west: 30.9635, east: 31.2465 } },
-    ],
-    attribution: 'Map data © OpenStreetMap contributors',
-  },
+  // The Harare practice map (tiles-harare, tools/render-harare.mjs) was taken
+  // out in v21 with the Harare Prep race, which confused runners. Phones that
+  // saved it free the space by themselves (removeOldTiles).
 };
 const ALL_TILE_SETS = Object.values(MAPS).flatMap(m => m.sets);
 const RACE_SOURCE_SHA256 = '2c0463b6ffde958bc8a0b5489d04023cbd628d08b432fdc2262097592d4b9aac';
@@ -751,7 +742,7 @@ async function downloadMap(btn, bar, text, id = activeMap) {
       text.textContent = `${Math.max(failed, missing)} pieces are missing. Check your connection and tap the button again; it carries on where it stopped.`;
     } else {
       // Free the space used by pieces of maps the app no longer uses. Pieces
-      // of the other current maps (e.g. Harare and Nyanga) are kept.
+      // of the other current maps are kept.
       // A piece is identified by "<set>/<z>/<x>/<y>.webp", the last 4 parts of its address.
       for (const req of await cache.keys()) {
         const key = new URL(req.url).pathname.split('/').slice(-4).join('/');
@@ -1314,7 +1305,7 @@ const setup = {
     catch (err) { $('raceCards').textContent = 'Could not load the races: ' + (err.message || err) + '. Connect to the internet and try again.'; return; }
     const days = r => (r.stages ? `<span class="days">${r.stages.map(s => `${escapeHtml(s.name)}: ${s.distanceKm} km`).join('<br>')}</span>` : '');
     const card = r => `<button class="racecard${this.picked === r.id ? ' picked' : ''}" data-id="${escapeHtml(r.id)}">
-      ${r.practice ? '<span class="practice">Practice run · Harare</span>' : ''}<b>${escapeHtml(r.name)}</b><span>${r.stages ? r.stages.length + ' days · ' : ''}${r.distanceKm} km · ${r.climbM} m climb${r.start ? ' · start ' + escapeHtml(r.start) : ''}${r.checkpoints ? ` · ${r.checkpoints} checkpoints` : ''}</span>${days(r)}</button>`;
+      ${r.practice ? '<span class="practice">Practice run</span>' : ''}<b>${escapeHtml(r.name)}</b><span>${r.stages ? r.stages.length + ' days · ' : ''}${r.distanceKm} km · ${r.climbM} m climb${r.start ? ' · start ' + escapeHtml(r.start) : ''}${r.checkpoints ? ` · ${r.checkpoints} checkpoints` : ''}</span>${days(r)}</button>`;
     $('raceCards').innerHTML = list.map(card).join('');
     const confirmBtn = $('suConfirm');
     const update = () => {

@@ -99,7 +99,7 @@ try {
     $('login').hidden = true; $('app').hidden = false; document.querySelector('.tabs').hidden = false;
     runners = []; renderAll(); await loadRoutes(); show('races');
   });
-  check('Race settings lists every race', await page.locator('.racecard').count() === 7);
+  check('Race settings lists every race', await page.locator('.racecard').count() === 6);
 
   const fileInput = '.racecard[data-race="the-challenge"] input[type=file]';
   await page.setInputFiles(fileInput, 'races/the-challenge.gpx');
@@ -174,8 +174,7 @@ try {
   check('Tapping a route says which race, how far along and how high', pop.includes('The Challenge') && /km \d+\.\d of 28\.\d/.test(pop) && / m high/.test(pop), pop.replace(/\n/g, ' | '));
   const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 5000 }).catch(() => null), page.click('[data-gpx="the-challenge"]')]);
   check('A race\'s current route downloads as a GPX file', !!dl && dl.suggestedFilename() === 'the-challenge.gpx', dl ? dl.suggestedFilename() : 'no download');
-  await page.click('[data-cmap="harare"]'); await page.waitForTimeout(500);
-  check('The Harare practice map shows Harare Prep', (await page.locator('#cmRaces').innerText()).includes('Harare Prep') && await page.locator('#cmRaces .cmrace').count() === 1 && await lines() === 1);
+  check('No Harare Prep on the course map', !(await page.locator('#cmRaces').innerText()).includes('Harare') && !(await page.locator('[data-cmap]').count()));
   // ------------------------------------------------------------------
   // Start list: the race sheet dropped in, checked, saved; phones matched to it.
   {
