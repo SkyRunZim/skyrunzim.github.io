@@ -77,7 +77,7 @@ try {
 
   // ------------------------------------------------------------------
   // Race settings: drop a GPX file, preview, publish.
-  const page = await browser.newPage({ viewport: { width: 1300, height: 900 } });
+  const page = await browser.newPage({ viewport: { width: 1300, height: 900 }, permissions: ['clipboard-read', 'clipboard-write'] });
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   page.on('dialog', d => d.accept());
@@ -280,6 +280,22 @@ try {
     await page.fill('#q', '');
     const msg = await page.evaluate(() => { show('messages'); return $('msgList').innerText; });
     check('A message read on two of her sign-ins counts once', msg.includes('read by 2 of 4'), msg.replace(/\n/g, ' | '));
+
+    // WhatsApp reminder for one problem: @names once each, what to do, the app link.
+    await page.evaluate(() => show('overview'));
+    await page.click('[data-copy-issue="0"]');
+    const wa = await page.locator('#waText').inputValue();
+    const at = wa.split('\n').filter(l => l.startsWith('@'));
+    check('WhatsApp reminder lists each runner once with an @', await page.locator('#waModal').isVisible() &&
+      JSON.stringify(at) === JSON.stringify(['@jane DOE (363)', '@Peter Smith (363)']), JSON.stringify(at));
+    check('WhatsApp reminder says what to do and gives the app link', wa.startsWith('*Hello from SkyRun Race Control*') &&
+      wa.includes('*Edit my name or bib number*') && wa.includes('https://skyrunzim.github.io/'), wa.replace(/\n/g, ' | '));
+    check('Every problem has WhatsApp wording', await page.evaluate(() => ISSUES.every(i => WA_ASK[i[1]])));
+    await page.fill('#waText', 'edited');
+    await page.click('#waCopy');
+    check('The edited message is what gets copied', await page.evaluate(() => navigator.clipboard.readText()) === 'edited');
+    await page.click('#waClose');
+    check('Close hides the reminder', await page.locator('#waModal').isHidden());
   }
   check('No page errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

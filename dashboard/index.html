@@ -219,6 +219,8 @@ tr.sub td.bib { font-size: 14px; }
 .modalbox label { display: grid; gap: 4px; font-size: 14px; }
 .modalbox input:not([type]), .modalbox textarea { border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 8px 10px; }
 .modalbox textarea { min-height: 70px; resize: vertical; }
+.wabox { width: min(640px, 100%); }
+.wabox textarea { width: 100%; min-height: 320px; font: 14px/1.45 var(--body); }
 .tickrow { display: flex !important; align-items: center; gap: 8px; }
 .warnline { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 .badline { background: var(--bad-bg); color: var(--bad); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-weight: 600; }
@@ -359,6 +361,14 @@ tr.sub td.bib { font-size: 14px; }
     <div class="racegrid" id="raceGrid"><p class="notice">Loading races…</p></div>
   </section>
 </main>
+<div class="modal" id="waModal" hidden>
+  <div class="panel modalbox wabox" role="dialog" aria-labelledby="waTitle">
+    <div class="head"><div><h2 id="waTitle">WhatsApp reminder</h2><div class="sub" id="waSub"></div></div><button class="btn" id="waClose">Close</button></div>
+    <textarea id="waText" aria-label="Message"></textarea>
+    <div class="acts" style="justify-content:flex-start;margin-top:10px"><button class="btn primary" id="waCopy">Copy message</button><button class="btn" id="waNames">Copy just the names</button></div>
+    <div class="notice">Tip: a pasted @name shows the name clearly but does not ping the runner. For a real tag, delete the name in WhatsApp, type @ and pick them from the list.</div>
+  </div>
+</div>
 <div class="modal" id="routeModal" hidden>
   <div class="panel modalbox" role="dialog" aria-labelledby="rmTitle">
     <div class="head"><div><h2 id="rmTitle">Route update</h2><div class="sub" id="rmSub"></div></div><button class="btn" id="rmClose">Cancel</button></div>
@@ -498,6 +508,37 @@ const ISSUES = [
   ['info', 'Notifications off', 'Will only see messages when they open the app. Ask them to tap Menu > Turn on notifications', r => pushIds && !hasPush(r)],
 ];
 
+// WhatsApp reminders: what each group of runners is asked to do, in the
+// words and button names they will see in the app (☰ = the menu button).
+const APP_LINK = 'https://skyrunzim.github.io/';
+const WA_ASK = {
+  'Bib used twice': 'Two phones have the same race number. Please open the SkyRunZim app, tap the menu (☰) › *Edit my name or bib number* and check your race number is correct.',
+  'Indemnity not accepted': 'Please open the SkyRunZim app with signal. The indemnity form will appear: read it to the end and accept it.',
+  'Different race on the start list': 'The race chosen in your app is different from your race entry. Please open the SkyRunZim app, tap the menu (☰) › *Change race* and choose the race you entered.',
+  'Not on the start list': 'We cannot match your name and race number to the entry list. Please open the SkyRunZim app, tap the menu (☰) › *Edit my name or bib number* and check both match your race entry.',
+  'Map not saved': 'Your race map is not yet saved on your phone, and without it the app will NOT work on the mountain where there is no signal. Please open the SkyRunZim app *on wifi*, tap the menu (☰) › *Download map for offline* and keep the app open until it says it is finished.',
+  'Location not allowed': 'The app cannot see your location yet. Please allow location for the SkyRunZim app:\n• Android: open the app, tap the lock next to the web address › Permissions › Location › Allow.\n• iPhone: Settings › Privacy & Security › Location Services › Safari Websites › While Using.',
+  'Setup not finished': 'You started setting up the SkyRunZim app but did not finish. Please open it and go through the remaining screens: your race, your details, the map download (on wifi) and location.',
+  'No bib number': 'Please add your race number in the SkyRunZim app: tap the menu (☰) › *Edit my name or bib number*.',
+  'Old app version': 'There is a newer version of the SkyRunZim app. Please open the app *on wifi* and tap *Update now* at the top of the screen.',
+  'Not seen for 3+ days': 'Please open the SkyRunZim app with signal for a minute, so it can pick up the latest updates and messages from Race Control.',
+  'Notifications off': 'Please turn on notifications so messages from Race Control reach you even when your phone is locked: open the SkyRunZim app, tap the menu (☰) › *🔔 Turn on notifications* › *Allow*. (iPhone: open the app from its icon on your home screen first.)',
+};
+// One message for the race WhatsApp group: each runner on their own line
+// with an @ so they spot their name, then what to do and the app link.
+function waMessage(title, list) {
+  const names = [...list].sort((a, b) => String(a.name).localeCompare(String(b.name)))
+    .map(r => `@${String(r.name || 'Runner').replace(/\s+/g, ' ').trim()}${r.bib ? ` (${r.bib})` : ''}`);
+  return `*Hello from SkyRun Race Control* 👋\n\n${names.join('\n')}\n\n${WA_ASK[title] || ''}\n\nApp link: ${APP_LINK}\n\nThank you, and see you on the mountain! 🏔️`;
+}
+function openWa(k) {
+  const [, title, , test] = ISSUES[k], list = runners.filter(test);
+  $('waTitle').textContent = `WhatsApp reminder: ${title}`;
+  $('waSub').textContent = `${list.length} runner${list.length === 1 ? '' : 's'}. Edit the wording if you like, then copy and paste it into the race WhatsApp group.`;
+  $('waText').value = waMessage(title, list);
+  $('waModal').hidden = false;
+}
+
 // ---- Overview ----
 function renderOverview() {
   const total = runners.length, readyN = runners.filter(ready).length;
@@ -535,15 +576,18 @@ function renderOverview() {
   $('issues').innerHTML = ISSUES.map(([sev, title, why, test], k) => {
     const n = runners.filter(test).length;
     return `<div class="issue ${sev}"><div class="stripe"></div><div><span class="count num">${n}</span><b>${title}</b><div class="why">${why}</div></div>
-      <div class="acts"><button class="btn" data-view-issue="${k}"${n ? '' : ' disabled'}>View</button><button class="btn" data-copy-issue="${k}"${n ? '' : ' disabled'}>Copy names</button></div></div>`;
+      <div class="acts"><button class="btn" data-view-issue="${k}"${n ? '' : ' disabled'}>View</button><button class="btn" data-copy-issue="${k}"${n ? '' : ' disabled'}>Copy for WhatsApp</button></div></div>`;
   }).join('');
   drawChart();
 }
 $('issues').addEventListener('click', e => {
   const v = e.target.closest('[data-view-issue]'), c = e.target.closest('[data-copy-issue]');
   if (v) { state.issue = +v.dataset.viewIssue; state.chip = 'all'; show('runners'); renderTable(); }
-  if (c) { const [, title, , test] = ISSUES[+c.dataset.copyIssue]; const list = runners.filter(test); copy(list.map(r => `${r.bib || '-'} ${r.name}`).join('\n'), `${title}: ${list.length} names`); }
+  if (c) openWa(+c.dataset.copyIssue);
 });
+$('waClose').addEventListener('click', () => { $('waModal').hidden = true; });
+$('waCopy').addEventListener('click', () => copy($('waText').value, 'the message. Paste it into the WhatsApp group'));
+$('waNames').addEventListener('click', () => copy($('waText').value.split('\n').filter(l => l.startsWith('@')).join('\n'), 'just the names'));
 
 // Running total of sign-ins by day (the last 14 days at most), drawn to scale.
 function drawChart() {
