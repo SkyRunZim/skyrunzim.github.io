@@ -296,6 +296,20 @@ try {
     check('The edited message is what gets copied', await page.evaluate(() => navigator.clipboard.readText()) === 'edited');
     await page.click('#waClose');
     check('Close hides the reminder', await page.locator('#waModal').isHidden());
+
+    // Viewing one problem's runners, then getting back to the overview.
+    await page.click('[data-view-issue="0"]');
+    check('Viewing a problem shows a bar saying which, with a way back', await page.locator('#view-runners').isVisible() &&
+      (await page.locator('#issueName').innerText()) === '2 runners: Bib used twice' && await page.locator('#backHome').isVisible());
+    await page.click('#backHome');
+    check('"Back to overview" goes back and clears the filter', await page.locator('#view-overview').isVisible() && await page.evaluate(() => state.issue === null));
+    await page.click('[data-view-issue="0"]');
+    await page.click('#showAll');
+    check('"Show all runners" clears the filter', await page.locator('#issueBar').isHidden() && await page.locator('#tbody tr:not(.sub)').count() === 4);
+    await page.click('.tab[data-view="overview"]');
+    await page.click('[data-view-issue="0"]');
+    await page.goBack();
+    check('The phone or browser Back button returns to the overview', await page.locator('#view-overview').isVisible());
   }
   check('No page errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

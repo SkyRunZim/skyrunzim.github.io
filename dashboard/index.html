@@ -130,6 +130,8 @@ main { padding-block: 18px 40px; display: grid; gap: 18px; }
 .tools input[type="search"], .tools select { border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 8px 10px; min-width: 0; }
 .tools input[type="search"] { flex: 1 1 220px; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.issuebar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 10px 12px; margin-bottom: 10px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
+.issuebar b { flex: 1 1 160px; font-size: 15px; }
 .chip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 5px 12px; font-size: 13px; font-weight: 600; cursor: pointer; }
 .chip[aria-pressed="true"] { background: var(--brand); border-color: var(--brand); color: #fff; }
 :root[data-theme="dark"] .chip[aria-pressed="true"] { color: #0f1522; }
@@ -298,6 +300,12 @@ tr.sub td.bib { font-size: 14px; }
   <section class="view panel" id="view-runners" hidden>
     <div class="head"><div><h2>Runners</h2><div class="sub" id="rcount"></div></div>
       <button class="btn" id="copyCsv">Copy list for Excel</button></div>
+    <div class="issuebar" id="issueBar" hidden>
+      <button class="btn primary" id="backHome">← Back to overview</button>
+      <b id="issueName"></b>
+      <button class="btn" id="waIssue">Copy for WhatsApp</button>
+      <button class="btn" id="showAll">Show all runners</button>
+    </div>
     <div class="tools">
       <input type="search" id="q" placeholder="Search name or bib" aria-label="Search name or bib">
       <select id="raceSel" aria-label="Race"><option value="">All races</option></select>
@@ -582,7 +590,7 @@ function renderOverview() {
 }
 $('issues').addEventListener('click', e => {
   const v = e.target.closest('[data-view-issue]'), c = e.target.closest('[data-copy-issue]');
-  if (v) { state.issue = +v.dataset.viewIssue; state.chip = 'all'; show('runners'); renderTable(); }
+  if (v) { state.issue = +v.dataset.viewIssue; state.chip = 'all'; show('runners'); renderTable(); window.scrollTo(0, 0); }
   if (c) openWa(+c.dataset.copyIssue);
 });
 $('waClose').addEventListener('click', () => { $('waModal').hidden = true; });
@@ -657,6 +665,8 @@ function renderTable() {
   const extra = phones.length - runners.length;
   $('rcount').textContent = `${list.length} of ${runners.length} runners` + (state.issue != null ? ` · ${ISSUES[state.issue][1]}` : '') +
     (extra ? ` · ${extra} extra sign-in${extra === 1 ? '' : 's'} from the same people, shown under their name` : '');
+  $('issueBar').hidden = state.issue == null;
+  if (state.issue != null) $('issueName').textContent = `${list.length} runner${list.length === 1 ? '' : 's'}: ${ISSUES[state.issue][1]}`;
   const app = r => { const old = r.app_version && verNum(r.app_version) < verNum(latestApp); return r.app_version ? (old ? `<span class="n">${esc(r.app_version)}</span>` : esc(r.app_version)) : '<span class="q">–</span>'; };
   $('tbody').innerHTML = list.map(r => {
     const [cls, label] = statusOf(r), p = problems(r), n = r.others.length + 1, open = openPeople.has(r.device_id);
@@ -694,7 +704,11 @@ $('copyCsv').addEventListener('click', () => {
 });
 
 // ---- Tabs ----
-function show(v) {
+// Each tab is a step in the browser history, so the phone's Back button
+// (or the browser's) goes back to the previous tab instead of leaving.
+function show(v, fromHistory) {
+  const now = (document.querySelector('.tab[aria-selected="true"]') || {}).dataset;
+  if (!fromHistory && now && now.view !== v && location.protocol.startsWith('http')) history.pushState({ view: v }, '', '#' + v);
   document.querySelectorAll('.tab').forEach(t => t.setAttribute('aria-selected', t.dataset.view === v));
   document.querySelectorAll('.view').forEach(s => (s.hidden = s.id !== 'view-' + v));
   if (v === 'overview') drawChart();
@@ -813,6 +827,11 @@ async function slSave() {
   await loadStartList();
 }
 document.querySelector('.tabs').addEventListener('click', e => { const t = e.target.closest('.tab'); if (t) show(t.dataset.view); });
+window.addEventListener('popstate', e => { show((e.state && e.state.view) || 'overview', true); window.scrollTo(0, 0); });
+history.replaceState({ view: 'overview' }, '', location.pathname + location.search);
+$('backHome').addEventListener('click', () => { state.issue = null; renderTable(); show('overview'); window.scrollTo(0, 0); });
+$('showAll').addEventListener('click', () => { state.issue = null; renderTable(); });
+$('waIssue').addEventListener('click', () => { if (state.issue != null) openWa(state.issue); });
 
 function renderAll() { derive(); renderOverview(); renderTable(); renderMsgs(); renderStartList(); }
 
